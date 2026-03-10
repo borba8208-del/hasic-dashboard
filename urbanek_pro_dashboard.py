@@ -68,7 +68,7 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def import_all_ceniky() -> str:
-    """Synchronizuje CSV s DB, ošetřuje kódování a čistí duplicity nahlášené Robotem."""
+    """Synchronizuje CSV s DB, řeší kódování a odstraňuje duplicity položek."""
     log_messages = []
     connection = sqlite3.connect(DB_PATH)
     for ui_key, csv_name in CATEGORY_MAP.items():
@@ -78,20 +78,20 @@ def import_all_ceniky() -> str:
             log_messages.append(f"⚠️ {csv_name}.csv: Nenalezen")
             continue
         try:
-            # Podpora pro UTF-8 i CP1250 (Excel)
+            # Podpora pro UTF-8 i CP1250 (Excel/Access exporty)
             try:
                 df = pd.read_csv(file_path, sep=";", encoding="utf-8")
-            except UnicodeDecodeError:
+            except:
                 df = pd.read_csv(file_path, sep=";", encoding="cp1250")
             
             df.columns = [col.strip().lower() for col in df.columns]
             
             if "nazev" in df.columns and "cena" in df.columns:
-                # FIX DUPLICIT: Automatické odstranění duplicit nahlášených analýzou
+                # OŠETŘENÍ DUPLICIT (např. u skříní na HP nahlášených Robotem)
                 df["nazev"] = df["nazev"].astype(str).str.strip()
                 df = df.drop_duplicates(subset=['nazev'], keep='first')
                 
-                # Formátování cen (podpora pro čárku i tečku)
+                # Formátování cen (Excel používá čárky, SQL tečky)
                 df["cena"] = pd.to_numeric(df["cena"].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
                 
                 valid_cols = [col for col in df.columns if col in ["nazev", "cena", "jednotka"]]
@@ -100,7 +100,7 @@ def import_all_ceniky() -> str:
                     valid_cols.append("jednotka")
                 
                 df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
-                log_messages.append(f"✅ {table_name}: {len(df)} položek")
+                log_messages.append(f"✅ {table_name}: {len(df)} položek (vyčištěno)")
             else:
                 log_messages.append(f"❌ {csv_name}.csv: Chybí sloupce nazev/cena")
         except Exception as error:
@@ -119,9 +119,10 @@ def get_price(cat_key: str, item_name: str) -> float:
     except: return 0.0
 
 # ==========================================
-# 3. ARES A DATABÁZE PARTNERŮ
+# 3. ARES API – OPRAVA DIZKRITIKY
 # ==========================================
 def get_company_from_ares(ico: str | int):
+    """Hluboký parser ARES JSON (ekonomickySubjekt -> sidlo)."""
     ico_clean = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico_clean}"
     try:
@@ -155,23 +156,8 @@ def update_customer_in_db(zakaznik: dict) -> bool:
         conn.commit(); conn.close(); return True
     except: return False
 
-def repair_all_customers_with_ares() -> str:
-    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
-    rows = cur.execute("SELECT ICO FROM obchpartner").fetchall()
-    fixed = 0; skipped = 0; prog = st.progress(0)
-    for i, (ico,) in enumerate(rows):
-        ico_str = str(ico).strip()
-        if len(ico_str) < 6: skipped += 1; continue
-        ares = get_company_from_ares(ico_str)
-        if ares: ares["ICO"] = ico_str; update_customer_in_db(ares); fixed += 1
-        else: skipped += 1
-        prog.progress((i + 1) / len(rows))
-        if i % 10 == 0: time.sleep(0.05)
-    conn.close()
-    return f"Hromadná oprava dokončena. Vyčištěno {fixed} firem."
-
 # ==========================================
-# 4. PDF ENGINE (PROFESIONÁLNÍ)
+# 4. PDF ENGINE (VYLEPŠENÝ LAYOUT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -248,9 +234,9 @@ def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 5. STREAMLIT UI
+# 5. STREAMLIT UI (STYL V4.0 + MOZEK V7.4)
 # ==========================================
-st.set_page_config(page_title="Urbánek Master Pro v7.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Master Pro v7.4", layout="wide", page_icon="🛡️")
 
 def load_data():
     if not os.path.exists(DB_PATH): return None
@@ -281,20 +267,18 @@ with st.sidebar:
                 st.session_state.vybrany_zakaznik = curr.copy()
     
     st.divider()
-    source_dl = st.text_input("Číslo dokladu", value=f"DL {datetime.date.today().year}/XXX")
-    je_svj = st.toggle("Uplatnit sníženou sazbu 12% (SVJ)", value=True)
+    source_dl = st.text_input("Zdrojový doklad", value=f"DL {datetime.date.today().year}/XXX")
+    je_svj = st.toggle("Uplatnit 12% DPH (SVJ / Bytové domy)", value=True)
     sazba = 0.12 if je_svj else 0.21
     
     with st.expander("⚙️ Pokročilá správa"):
-        if st.button("🚀 Synchronizovat ceníky (CSV -> SQL)"):
+        if st.button("🚀 Synchronizovat ceníky (CSV)"):
             st.code(import_all_ceniky()); st.rerun()
-        if st.button("🛠️ Opravit CELOU DB přes ARES"):
-            st.success(repair_all_customers_with_ares()); st.rerun()
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v7.3 Final Master | Boršov n. Vltavou | Robot-Verified Build")
+st.caption("Master Dashboard v7.4 | Boršov n. Vltavou | Přesné ceny z HP.csv")
 
-tabs = st.tabs(["🔥 HP & Servis", "🚰 Vodovody", "🖼️ Tabulky & Značení", "🛠️ ND & Hilti", "💼 OZO & Ostatní", "🧾 Export"])
+tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "📦 Servis & Náhrady", "🖼️ Značení & Ostatní", "🧾 Export"])
 
 def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     p_val = get_price(cat_key, item_name)
@@ -305,62 +289,53 @@ def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     st.session_state.data_zakazky[item_name] = {"q": q, "p": p}
 
 with tabs[0]:
-    st.subheader("1. Kontrola provozuschopnosti a servis HP")
+    st.subheader("1. Kontrola provozuschopnosti a prodej HP")
     item_row("HP", "Kontrola HP (shodný)", "h1")
     item_row("HP", "Kontrola HP (neshodný opravitelný)", "h2")
     item_row("HP", "Kontrola HP (neopravitelný) + odb. zneprovoznění", "h3")
-    item_row("HP", "Hodinová sazba za provedení prací", "h5", step_val=0.05)
+    item_row("HP", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", "h4")
     st.divider()
-    item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", "n4")
-    item_row("Servisni_ukony", "Tlaková zkouška nádoby HP", "s1")
+    st.caption("Položky dotažené z nahraného HP.csv:")
+    item_row("HP", "Skříň na HP 9kg KOM 9 AZ/O", "h11")
+    item_row("HP", "Hasicí přístroj V9LE Tepostop", "h12")
 
 with tabs[1]:
     st.subheader("2. Zařízení pro zásobování požární vodou")
-    st.info("Prováděno měření certifikovaným zařízením dle vyhl. 246/2001 Sb.")
+    st.info("Prováděno měření hydrodynamického tlaku a průtoku certifikovaným zařízením.")
     item_row("Voda", "Prohlídka zařízení od 11 do 20 ks výtoků", "v1")
     item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant. systémů", "v3")
-    item_row("ND_Voda", "Hydrantový box - zámek/okénko", "ndv1")
 
 with tabs[2]:
-    st.subheader("3. Bezpečnostní tabulky a značení")
-    item_row("TAB", "Tabulka - Hasicí přístroj (plast)", "t1")
-    item_row("TABFOTO", "Info.plast.fotolumin. 300x150mm", "tf1")
-    item_row("reklama", "Polep firemním logem", "r1")
+    st.subheader("3. Servisní úkony a náhrady")
+    item_row("Nahrady", "Převzetí HP vyřazeného z užívání dodavatelem", "n1")
+    item_row("Nahrady", "Označení - vylepení koleček o kontrole (á 2ks)", "n2")
+    item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", "n4")
 
 with tabs[3]:
-    st.subheader("4. Náhradní díly a technologie")
-    item_row("ND_HP", "Věšák Delta W+PG NEURUPPIN", "nd1")
-    item_row("HILTI", "Protipožární ucpávka Hilti", "hi1")
-    item_row("PASKA", "Páska ohraničovací", "pa1")
-    item_row("PK", "Požární klapka - kontrola", "pk1")
-
-with tabs[4]:
-    st.subheader("5. Odborné služby a doplňky")
-    item_row("OZO", "Odborně způsobilá osoba - školení", "ozo1")
-    item_row("CIDLO", "Hlásič požáru / Čidlo", "ci1")
-    item_row("FA", "Zboží dle faktury", "fa1")
+    st.subheader("4. Bezpečnostní tabulky a značení")
+    item_row("TAB", "Tabulka - Hasicí přístroj (plast)", "t1")
+    item_row("TABFOTO", "Info.plast.fotolumin. 300x150mm", "tf1")
     item_row("Ostatni", "Technicko organizační činnost v PO", "o1")
 
-with tabs[5]:
+with tabs[4]:
     active_items = {k: v for k, v in st.session_state.data_zakazky.items() if v["q"] > 0}
     if not active_items:
         st.warning("Doklad neobsahuje žádné položky.")
     else:
         grand_total = sum(vals["q"] * vals["p"] for vals in active_items.values())
-        st.write(f"### Náhled rekapitulace pro: {st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else 'Neznámý'}")
-        
+        st.write(f"### Rozpis pro: {st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else 'Neznámý'}")
         flat_list = [[k, v["q"], v["p"]] for k, v in active_items.items()]
         st.table([{"Položka": row[0], "Ks": f"{row[1]:.2f}".rstrip("0").rstrip("."), "Celkem": f"{row[1]*row[2]:,.2f} Kč"} for row in flat_list])
         
         st.divider()
         c_f1, c_f2 = st.columns(2)
         with c_f1:
-            st.metric("ZÁKLAD DANĚ CELKEM", f"{grand_total:,.2f} Kč")
+            st.metric("ZÁKLAD DANĚ", f"{grand_total:,.2f} Kč")
             st.metric("CELKEM K ÚHRADĚ VČ. DPH", f"{grand_total * (1+sazba):,.2f} Kč")
         
         with c_f2:
             if st.button("📄 GENEROVAT PDF ROZPIS"):
-                note = "Poznámka: Kontrola provozuschopnosti dle vyhlášky 246/2001 Sb. U HP typu NV (neopravitelné) doklad neslouží pro státní evidenci odpadů. Zpracováno systémem HASIČ-SERVIS."
+                note = "Poznámka: Kontrola provozuschopnosti dle vyhlášky 246/2001 Sb. U HP typu NV (neopravitelné) doklad neslouží pro evidenci odpadů. Zpracováno systémem HASIČ-SERVIS."
                 pdf_doc = create_report_pdf(st.session_state.vybrany_zakaznik, flat_list, grand_total, sazba, f"Rozpis prací k {source_dl}", note)
                 if pdf_doc: st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"Rozpis_{source_dl.replace('/','-')}.pdf")
 
