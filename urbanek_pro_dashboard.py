@@ -39,59 +39,83 @@ if 'data' not in st.session_state:
     st.session_state.data = {}
 
 # ==========================================
-# 2. PDF ENGINE (UNICODE A FIX ČEŠTINY)
+# 2. PDF ENGINE (INTELIGENTNÍ DETEKCE PÍSEM)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
         super().__init__()
         self.pismo_ok = False
-        try:
-            # Cloud/Local paths
-            self.add_font("ArialCZ", "", "arial.ttf")
-            self.add_font("ArialCZ", "B", "arialbd.ttf")
-            self.add_font("ArialCZ", "I", "ariali.ttf")
-            self.pismo = "ArialCZ"
-            self.pismo_ok = True
-        except:
+        self.pismo_name = "ArialCZ"
+        
+        # Seznam variant k prohledání (Cloud Linux je case-sensitive!)
+        font_variants = {
+            "regular": ["arial.ttf", "ARIAL.TTF", "Arial.ttf"],
+            "bold": ["arialbd.ttf", "ARIALBD.TTF", "Arialbd.ttf"],
+            "italic": ["ariali.ttf", "ARIALI.TTF", "Ariali.ttf"]
+        }
+        
+        found = {"regular": None, "bold": None, "italic": None}
+        
+        # 1. Hledání v lokální složce (GitHub)
+        for style, names in font_variants.items():
+            for name in names:
+                if os.path.exists(name):
+                    found[style] = name
+                    break
+        
+        # 2. Hledání ve Windows (Fallback pro lokální vývoj)
+        if not found["regular"]:
+            win_path = "C:/Windows/Fonts/"
+            for style, names in font_variants.items():
+                for name in names:
+                    full_p = os.path.join(win_path, name)
+                    if os.path.exists(full_p):
+                        found[style] = full_p
+                        break
+
+        # Registrace, pokud jsme našli aspoň základ
+        if found["regular"] and found["bold"]:
             try:
-                path = "C:/Windows/Fonts/arial"
-                self.add_font("ArialCZ", "", f"{path}.ttf")
-                self.add_font("ArialCZ", "B", f"{path}bd.ttf")
-                self.add_font("ArialCZ", "I", f"{path}i.ttf")
-                self.pismo = "ArialCZ"
+                self.add_font(self.pismo_name, "", found["regular"])
+                self.add_font(self.pismo_name, "B", found["bold"])
+                if found["italic"]:
+                    self.add_font(self.pismo_name, "I", found["italic"])
                 self.pismo_ok = True
             except:
-                self.pismo = "helvetica"
                 self.pismo_ok = False
+        else:
+            self.pismo_ok = False
 
     def header(self):
-        font_style = self.pismo if self.pismo_ok else 'helvetica'
-        self.set_font(font_style, 'B', 14)
+        f_style = self.pismo_name if self.pismo_ok else 'helvetica'
+        self.set_font(f_style, 'B', 14)
         self.cell(0, 10, FIRMA["název"], ln=True)
-        self.set_font(font_style, '', 9)
+        self.set_font(f_style, '', 9)
         self.cell(0, 5, f"Specialista na požární bezpečnost | {FIRMA['sídlo']}", ln=True)
         self.line(10, 28, 200, 28)
         self.ln(10)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font(self.pismo, 'I', 8)
+        f_style = self.pismo_name if self.pismo_ok else 'helvetica'
+        self.set_font(f_style, 'I', 8)
         self.cell(0, 10, f"Zpracováno v systému W-SERVIS | Odborná certifikace: {FIRMA['certifikace']} | Strana {self.page_no()}", align='C')
 
 def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
     if not pdf.pismo_ok:
-        raise Exception("Chyba písma: TTF soubory nebyly nalezeny.")
+        st.error("❌ Kritická chyba: TTF soubory nebyly v repozitáři nalezeny. PDF nemůže být vygenerováno s češtinou.")
+        return None
         
     pdf.add_page()
-    pdf.set_font(pdf.pismo, "B", 16)
+    pdf.set_font(pdf.pismo_name, "B", 16)
     pdf.cell(0, 10, f"{doc_title}", ln=True)
-    pdf.set_font(pdf.pismo, "", 12)
+    pdf.set_font(pdf.pismo_name, "", 12)
     pdf.cell(0, 10, f"Odběratel: {klient}", ln=True)
     pdf.ln(5)
 
     # Tabulka
-    pdf.set_font(pdf.pismo, "B", 10)
+    pdf.set_font(pdf.pismo_name, "B", 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(100, 8, "Položka / úkon (v souladu s vyhl. 246/2001 Sb.)", border=1, fill=True)
     pdf.cell(15, 8, "Ks", border=1, align='C', fill=True)
@@ -99,11 +123,10 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
     pdf.cell(40, 8, "Celkem", border=1, align='R', fill=True)
     pdf.ln()
 
-    pdf.set_font(pdf.pismo, "", 9)
+    pdf.set_font(pdf.pismo_name, "", 9)
     for name, vals in items_dict.items():
         if vals['q'] > 0:
             pdf.cell(100, 8, name, border=1)
-            # Formátování množství (celé číslo vs desetinné)
             q_display = f"{vals['q']:.2f}".rstrip('0').rstrip('.') if vals['q'] % 1 != 0 else f"{int(vals['q'])}"
             pdf.cell(15, 8, q_display, border=1, align='C')
             pdf.cell(35, 8, f"{vals['p']:,.2f} Kč", border=1, align='R')
@@ -111,7 +134,7 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
             pdf.ln()
 
     pdf.ln(10)
-    pdf.set_font(pdf.pismo, "B", 12)
+    pdf.set_font(pdf.pismo_name, "B", 12)
     pdf.cell(150, 10, "ZÁKLAD DANĚ CELKEM:", align='R')
     pdf.cell(40, 10, f"{total_zaklad:,.2f} Kč", align='R')
     pdf.ln()
@@ -122,7 +145,7 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
     if note_text:
         pdf.set_text_color(0, 0, 0)
         pdf.ln(15)
-        pdf.set_font(pdf.pismo, "I", 9)
+        pdf.set_font(pdf.pismo_name, "I", 9)
         pdf.multi_cell(0, 5, note_text)
     
     return bytes(pdf.output())
@@ -130,7 +153,10 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
 # ==========================================
 # 3. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v4.4", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v4.5", layout="wide", page_icon="🛡️")
+
+# Kontrola písem při startu
+pdf_tester = UrbaneKPDF()
 
 with st.sidebar:
     st.header("🏢 Hlavička zakázky")
@@ -139,23 +165,26 @@ with st.sidebar:
     je_svj = st.toggle("Uplatnit 12% DPH (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
     st.divider()
-    st.success("Režim: Cloudový asistent (v4.4)")
+    
+    # Stav písem v Sidebaru
+    if pdf_tester.pismo_ok:
+        st.success("✅ Písmo Arial detekováno")
+    else:
+        st.error("⚠️ Písmo nenalezeno!")
+        st.warning("Ujistěte se, že na GitHubu jsou soubory: arial.ttf, arialbd.ttf")
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Fix krokování kusů | Verze 4.4")
+st.caption("Verze 4.5 | Inteligentní PDF Font Detector")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "🛠️ Odborná činnost", "📦 Prodej zboží", "🧾 Souhrn & Export"])
 
-# VYLEPŠENÝ ŘÁDEK EDITORU S VOLITELNÝM KROKEM
 def item_row(category, name, default_q, default_p, key, step_q=1.0):
     c1, c2, c3 = st.columns([3, 1, 1])
     with c1: st.write(f"**{name}**")
-    # Změna: Pokud je step_q=1, používáme integer input pro čistší vzhled, jinak float
     with c2: 
         q = st.number_input(f"Q_{key}", min_value=0.0, step=float(step_q), value=float(default_q), key=f"q_{key}", label_visibility="collapsed")
     with c3: 
         p = st.number_input(f"P_{key}", min_value=0.0, step=0.1, value=float(default_p), key=f"p_{key}", label_visibility="collapsed")
-    
     st.session_state.data[name] = {'q': q, 'p': p, 'cat': category}
     return q * p
 
@@ -168,10 +197,9 @@ with tabs[0]:
     item_row("HP", "Kontrola pojízdného HP (shodný)", 0, DEFAULTS["hp_pojezdny_s"], "h4", step_q=1.0)
 
 with tabs[1]:
-    st.subheader("2. Požární vodovody (Kombinovaný krok)")
+    st.subheader("2. Požární vodovody (Větrná 13)")
     item_row("PV", "Kontrola hydrodyn. tlaku a průtoku (paušál)", 0, DEFAULTS["pv_hydro_pausal"], "v1", step_q=1.0)
     item_row("PV", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 0, DEFAULTS["pv_mereni_ks"], "v2", step_q=1.0)
-    # Tady necháváme krok 0.05 pro přesné hodiny (např. 0.65)
     item_row("PV", "Hod.sazba (pochůzky po objektu/ manipulace s HP/PV)", 0, DEFAULTS["pv_hodinova_sazba"], "v3", step_q=0.05)
     item_row("PV", "Vyhodnocení kontroly zařízení (paušál)", 0, DEFAULTS["pv_vyhodnoceni"], "v4", step_q=1.0)
     item_row("PV", "Vyhotovení zprávy o kontrole zařízení PBZ", 0, DEFAULTS["pv_zprava"], "v5", step_q=1.0)
@@ -182,7 +210,7 @@ with tabs[2]:
     item_row("TOC", "Technicko organizační činnost v PO (školení/dokumentace)", 0, DEFAULTS["toc"], "t1", step_q=1.0)
 
 with tabs[3]:
-    st.subheader("4. Prodej materiálu a zboží (krok 1 ks)")
+    st.subheader("4. Prodej materiálu a zboží")
     item_row("Zboží", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", 0, DEFAULTS["p6"], "p1", step_q=1.0)
     item_row("Zboží", "Hasicí přístroj V9Ti / V9LEc (voda)", 0, DEFAULTS["v9"], "p2", step_q=1.0)
     item_row("Zboží", "Věšák Delta W+PG NEURUPPIN", 0, DEFAULTS["vesak"], "p3", step_q=1.0)
@@ -199,7 +227,6 @@ with tabs[4]:
         grand_total = sum(v['q'] * v['p'] for v in final_items.values())
         st.write(f"### Rozpis pro: {klient_val}")
         
-        # Formátování pro tabulku v Streamlitu
         table_view = []
         for k, v in final_items.items():
             q_formated = f"{v['q']:.2f}".rstrip('0').rstrip('.') if v['q'] % 1 != 0 else f"{int(v['q'])}"
@@ -215,17 +242,21 @@ with tabs[4]:
         st.metric("CELKEM BEZ DPH", f"{grand_total:,.2f} Kč")
         
         if st.button("📄 Vygenerovat a stáhnout PDF Rozpis"):
-            try:
-                notes = []
-                if any(v['cat'] == 'HP' for v in final_items.values()):
-                    notes.append("Kontroly HP dle vyhl. 246/2001 Sb. Vyřazené HP byly odborně zneprovozněny.")
-                if any(v['cat'] == 'PV' for v in final_items.values()):
-                    notes.append("U požárních vodovodů bylo provedeno kapacitní měření certifikovaným zařízením s proměnnou clonou.")
-                
-                pdf_bytes = create_report_pdf(klient_val, final_items, grand_total, sazba, f"Rozpis prací k {source_dl}", "\n".join(notes))
-                st.download_button(label="⬇️ Stáhnout PDF", data=pdf_bytes, file_name=f"Rozpis_{klient_val.replace(' ','_')}.pdf", mime="application/pdf")
-            except Exception as e:
-                st.error(f"⚠️ {str(e)}")
+            if not pdf_tester.pismo_ok:
+                st.error("Nelze generovat PDF: Chybí soubory písem v repozitáři.")
+            else:
+                try:
+                    notes = []
+                    if any(v['cat'] == 'HP' for v in final_items.values()):
+                        notes.append("Kontroly HP dle vyhl. 246/2001 Sb. Vyřazené HP byly odborně zneprovozněny.")
+                    if any(v['cat'] == 'PV' for v in final_items.values()):
+                        notes.append("U požárních vodovodů bylo provedeno kapacitní měření certifikovaným zařízením s proměnnou clonou.")
+                    
+                    pdf_bytes = create_report_pdf(klient_val, final_items, grand_total, sazba, f"Rozpis prací k {source_dl}", "\n".join(notes))
+                    if pdf_bytes:
+                        st.download_button(label="⬇️ Stáhnout PDF", data=pdf_bytes, file_name=f"Rozpis_{klient_val.replace(' ','_')}.pdf", mime="application/pdf")
+                except Exception as e:
+                    st.error(f"⚠️ {str(e)}")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.4 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.5 | RT: Ilja Urbánek")
