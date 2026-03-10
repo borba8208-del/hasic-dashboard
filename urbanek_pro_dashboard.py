@@ -6,6 +6,7 @@ import pandas as pd
 import os
 import requests
 import json
+import time
 
 # ==========================================
 # 1. KONFIGURACE A DATOVÝ MODEL
@@ -41,7 +42,7 @@ if 'vybrany_zakaznik' not in st.session_state:
 # 2. POMOCNÉ FUNKCE (ARES, DB, ČÍTAČ)
 # ==========================================
 def get_company_from_ares(ico):
-    """Vylepšený parser ARES JSON (vnořený subjekt)."""
+    """Moderní parser pro ARES API (JSON)."""
     ico = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico}"
     try:
@@ -62,25 +63,18 @@ def get_company_from_ares(ico):
         }
     except: return None
 
-def load_customers():
-    db_path = "data/data.db"
-    if not os.path.exists(db_path): return None
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        df = pd.read_sql("SELECT * FROM obchpartner", conn)
-        conn.close()
-        return df
-    except: return None
-
 def update_customer_in_db(z):
+    """Bezpečné uložení/aktualizace dat v SQLite s přidáním sloupců."""
     db_path = "data/data.db"
     if not os.path.exists(db_path): return False
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
+        # Kontrola a přidání chybějících sloupců z XML exportu
         cols = [row[1] for row in cur.execute("PRAGMA table_info(obchpartner)")]
         for col in ["ADRESA1", "ADRESA2"]:
             if col not in cols: cur.execute(f"ALTER TABLE obchpartner ADD COLUMN {col} TEXT")
+        
         cur.execute("""
             UPDATE obchpartner 
             SET FIRMA = ?, ADRESA1 = ?, ADRESA2 = ?, ADRESA3 = ?, PSC = ?, DIC = ?
@@ -90,6 +84,52 @@ def update_customer_in_db(z):
         conn.close()
         return True
     except: return False
+
+def repair_all_customers_with_ares():
+    """Hromadná oprava celé databáze podle IČO."""
+    db_path = "data/data.db"
+    if not os.path.exists(db_path): return "Databáze chybí."
+    
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    rows = cur.execute("SELECT ICO FROM obchpartner").fetchall()
+    
+    fixed = 0
+    skipped = 0
+    progress = st.progress(0)
+    total = len(rows)
+    
+    for i, (ico,) in enumerate(rows):
+        ico_str = str(ico).strip()
+        if len(ico_str) < 6:
+            skipped += 1
+            continue
+        
+        ares_data = get_company_from_ares(ico_str)
+        if ares_data:
+            # Přidání ICO do dat pro update
+            ares_data['ICO'] = ico_str
+            update_customer_in_db(ares_data)
+            fixed += 1
+        else:
+            skipped += 1
+        
+        # Update progress baru a mírné zpoždění pro API (prevence blokace)
+        progress.progress((i + 1) / total)
+        if i % 5 == 0: time.sleep(0.1)
+        
+    conn.close()
+    return f"Hotovo! Opraveno {fixed} záznamů, přeskočeno {skipped}."
+
+def load_customers():
+    db_path = "data/data.db"
+    if not os.path.exists(db_path): return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        df = pd.read_sql("SELECT * FROM obchpartner", conn)
+        conn.close()
+        return df
+    except: return None
 
 def get_next_order_number():
     file_path = "data/counter.json"
@@ -105,15 +145,15 @@ def increment_order_counter():
     file_path = "data/counter.json"
     year = str(datetime.date.today().year)
     try:
+        data = {}
         if os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
-        else: data = {}
         data[year] = data.get(year, 0) + 1
         with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, indent=2)
     except: pass
 
 # ==========================================
-# 3. PDF ENGINE
+# 3. PDF ENGINE (PROFESIONÁLNÍ)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -195,9 +235,9 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 4. STREAMLIT UI (MAXIMÁLNÍ FIX)
+# 4. STREAMLIT UI (ABECEDNÍ A FIX SESSION)
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v5.8", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v5.9", layout="wide", page_icon="🛡️")
 df_customers = load_customers()
 
 with st.sidebar:
@@ -207,7 +247,7 @@ with st.sidebar:
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
         
-        # 1. ABECEDNÍ ŘAZENÍ
+        # ABECEDNÍ ŘAZENÍ
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
         
         if not filt.empty:
@@ -216,37 +256,43 @@ with st.sidebar:
             idx = filt.index[opts == sel].tolist()[0]
             curr = filt.loc[idx].to_dict()
             
-            # 2. LOGIKA SESSION STATE (NEPŘEPISOVAT OPRAVENÉ)
+            # LOGIKA SESSION STATE (CHRÁNÍME OPRAVENÁ DATA)
             if st.session_state.vybrany_zakaznik is None:
                 st.session_state.vybrany_zakaznik = curr.copy()
             elif st.session_state.vybrany_zakaznik["ICO"] != curr["ICO"]:
                 st.session_state.vybrany_zakaznik = curr.copy()
             
-            # 3. AUTOMATICKÝ ARES PŘI VÝBĚRU (POKUD CHYBÍ ADRESA1 NEBO ARES_OK)
+            # AUTOMATICKÁ KONTROLA ARES PŘI VÝBĚRU
             if not st.session_state.vybrany_zakaznik.get("ARES_OK"):
-                with st.spinner("Automatická oprava dat přes ARES..."):
+                with st.spinner("Ověřuji data v ARES..."):
                     ares = get_company_from_ares(st.session_state.vybrany_zakaznik["ICO"])
                     if ares:
                         st.session_state.vybrany_zakaznik.update(ares)
                         update_customer_in_db(st.session_state.vybrany_zakaznik)
-                        st.toast(f"Data firmy {ares['FIRMA']} byla opravena.", icon="🪄")
+                        st.toast(f"Firma {ares['FIRMA']} byla automaticky opravena.", icon="🪄")
         else: st.warning("Nenalezeno.")
+        
+        st.divider()
+        if st.button("🛠️ Opravit celou DB přes ARES"):
+            with st.spinner("Probíhá hromadná oprava..."):
+                rep_res = repair_all_customers_with_ares()
+                st.success(rep_res)
+                st.rerun() # Refresh pro načtení nových dat
     else: st.error("Chybí data/data.db")
 
     st.divider(); st.header("📝 Detaily zakázky")
-    # Vždy bereme data ze session_state (opravená verze)
     kl_pdf = st.text_input("Odběratel na PDF:", value=st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else "")
     src_dl = st.text_input("Číslo dokladu:", value=get_next_order_number())
     je_svj = st.toggle("Sazba DPH 12% (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v5.8 | Auto-ARES | Smart Session | Abecední řazení")
+st.caption("v5.9 | Hromadný ARES opravář | Abecední řazení | Automatická synchronizace")
 
 # Ukázka detailu pro kontrolu
 if st.session_state.vybrany_zakaznik:
     z = st.session_state.vybrany_zakaznik
-    with st.expander(f"📍 Detail: {z['FIRMA']}" + (" (ARES Opraveno)" if z.get("ARES_OK") else "")):
+    with st.expander(f"📍 Detail: {z['FIRMA']}" + (" (Prověřeno ARES)" if z.get("ARES_OK") else "")):
         c1, c2 = st.columns(2)
         c1.write(f"**IČO:** {z['ICO']}")
         c1.write(f"**DIČ:** {z.get('DIC','')}")
@@ -266,7 +312,7 @@ with tabs[0]:
     st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
     item_row("Kontroly HP", "Kontrola HP (shodný)", 0, DEFAULTS["hp_shodny"], "h1")
     item_row("Kontroly HP", "Kontrola HP (neshodný opravitelný)", 0, DEFAULTS["hp_opravitelny"], "h2")
-    item_row("Kontroly HP", "Kontrola HP (neopravitelný) + odb. zneprovoznění", 0, DEFAULTS["hp_likvidace"], "h3")
+    item_row("Kontroly HP", "Kontrola HP (neopravitelný) + zneprovoznění", 0, DEFAULTS["hp_likvidace"], "h3")
     item_row("Kontroly HP", "Manipulace a odvoz HP k údržbě/demontáži", 0, DEFAULTS["hp_manipulace"], "h4")
     item_row("Kontroly HP", "Hodinová sazba za provedení prací", 0, DEFAULTS["hp_hod_sazba"], "h5", step=0.05)
     item_row("Kontroly HP", "Náklady v obci do 90 tisích obyvatel", 0, DEFAULTS["hp_obec_do_90"], "h6")
