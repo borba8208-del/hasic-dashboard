@@ -122,7 +122,7 @@ def get_price(cat_key: str, item_name: str) -> float:
 # 3. ARES A PARTNEŘI
 # ==========================================
 def get_company_from_ares(ico: str | int):
-    """Hluboký parser ARES API pro 100% správnou češtinu a adresu."""
+    """Opravený hluboký parser ARES API (ekonomickySubjekt -> sidlo)."""
     ico = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico}"
     try:
@@ -261,7 +261,7 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
 # ==========================================
 # 5. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v6.5", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v6.6", layout="wide", page_icon="🛡️")
 
 def load_all_customers():
     if not os.path.exists(DB_PATH): return None
@@ -284,6 +284,7 @@ with st.sidebar:
         sq = st.text_input("🔍 Hledat firmu (IČO/Název):")
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
+        # ABECEDNÍ ŘAZENÍ
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
         
         if not filt.empty:
@@ -313,7 +314,7 @@ with st.sidebar:
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v6.5 | Deterministické ceníky | Jediný zdroj pravdy | 100% čeština")
+st.caption("v6.6 | Deterministické ceníky | CATEGORY_MAP Fix | 100% čeština")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "📦 Náhrady", "🚰 Požární vodovody", "🛠️ Ostatní", "🧾 Export"])
 
@@ -367,7 +368,7 @@ with tabs[4]:
         if st.button("📄 VYGENEROVAT DOKUMENT PDF"):
             if not st.session_state.vybrany_zakaznik: st.error("Vyberte partnera v bočním panelu.")
             else:
-                note = "Poznámka: Kontrola provozuschopnosti dle vyhlšky 246/2001 Sb. U PV provedeno měření certifikovaným zařízením. Zpracováno systémem HASIČ-SERVIS."
+                note = "Poznámka: Kontrola provozuschopnosti dle vyhlášky 246/2001 Sb. U PV provedeno měření certifikovaným zařízením. Zpracováno systémem HASIČ-SERVIS."
                 pdf = create_report_pdf(st.session_state.vybrany_zakaznik, structured, grand_total, sazba, f"Rozpis prací k č. {src_dl}", note)
                 if pdf: st.download_button("⬇️ STÁHNOUT PDF", data=pdf, file_name=f"Rozpis_{src_dl.replace('/','-')}.pdf")
 
