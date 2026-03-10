@@ -13,7 +13,6 @@ import re
 # ==========================================
 # CATEGORY_MAP – JEDINÝ ZDROJ PRAVDY
 # ==========================================
-# Tento slovník říká systému, který soubor CSV patří do které kategorie
 CATEGORY_MAP = {
     "HP": "HP",
     "Nahrady": "Nahrady",
@@ -51,17 +50,16 @@ CSV_FOLDER = "data/ceniky/"
 if not os.path.exists("data"): os.makedirs("data")
 if not os.path.exists(CSV_FOLDER): os.makedirs(CSV_FOLDER)
 
-# Inicializace session state
+# Inicializace session state pro zachování dat
 if "data_zakazky" not in st.session_state:
     st.session_state.data_zakazky = {}
 if "vybrany_zakaznik" not in st.session_state:
     st.session_state.vybrany_zakaznik = None
 
 # ==========================================
-# 2. CENÍKY – ROBUSTNÍ LOGIKA A DEDUPLIKACE
+# 2. CENÍKY – ROBUSTNÍ IMPORT A SQL LOGIKA
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
-    """Vytvoří bezpečný název tabulky bez diakritiky a mezer."""
     if not cat_key: return "cenik_ostatni"
     normalized = cat_key.lower().strip()
     normalized = "".join(char for char in unicodedata.normalize("NFKD", normalized) if not unicodedata.combining(char))
@@ -70,7 +68,7 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def import_all_ceniky() -> str:
-    """Synchronizuje všechna CSV do SQL a čistí duplicity hlášené analýzou."""
+    """Synchronizuje CSV s DB. Řeší diakritiku, kódování a duplicity položek."""
     log_messages = []
     connection = sqlite3.connect(DB_PATH)
     for ui_key, csv_name in CATEGORY_MAP.items():
@@ -82,7 +80,7 @@ def import_all_ceniky() -> str:
             continue
             
         try:
-            # Autodetekce kódování (český Excel export vs UTF-8)
+            # Pokus o načtení s více druhy kódování (Excel/Access standardy)
             try:
                 df = pd.read_csv(file_path, sep=";", encoding="utf-8")
             except:
@@ -91,13 +89,13 @@ def import_all_ceniky() -> str:
             df.columns = [col.strip().lower() for col in df.columns]
             
             if "nazev" in df.columns and "cena" in df.columns:
-                # OŠETŘENÍ DUPLICIT: Pokud jsou v CSV stejné názvy, Robot hlásí chybu -> smažeme je.
+                # FIX DUPLICIT: Automatické odstranění duplicit nahlášených analýzou
                 df["nazev"] = df["nazev"].astype(str).str.strip()
                 count_before = len(df)
                 df = df.drop_duplicates(subset=['nazev'], keep='first')
                 count_after = len(df)
                 
-                # Formátování cen (řeší čárky z Excelu)
+                # Bezpečný převod ceny (řeší čárky z Excelu)
                 df["cena"] = pd.to_numeric(df["cena"].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
                 
                 valid_cols = [col for col in df.columns if col in ["nazev", "cena", "jednotka"]]
@@ -118,7 +116,7 @@ def import_all_ceniky() -> str:
     return "\n".join(log_messages)
 
 def get_price(cat_key: str, item_name: str) -> float:
-    """Vrátí cenu z databáze na základě unikátního názvu položky."""
+    """Získá cenu položky ze správné SQL tabulky."""
     table = normalize_category_to_table(cat_key)
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -130,7 +128,7 @@ def get_price(cat_key: str, item_name: str) -> float:
         return 0.0
 
 # ==========================================
-# 3. ARES A DATABÁZE PARTNERŮ (ZÁCHRANA ČEŠTINY)
+# 3. ARES API – ZÁCHRANA DIZKRITIKY
 # ==========================================
 def get_company_from_ares(ico: str | int):
     """Hluboký parser ARES JSON pro 100% správnou adresu a diakritiku."""
@@ -156,7 +154,6 @@ def get_company_from_ares(ico: str | int):
     return None
 
 def update_customer_in_db(zakaznik: dict) -> bool:
-    """Uloží opravená data z ARES trvale do databáze."""
     try:
         conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
         cols = [row[1] for row in cur.execute("PRAGMA table_info(obchpartner)")]
@@ -169,7 +166,6 @@ def update_customer_in_db(zakaznik: dict) -> bool:
     except: return False
 
 def repair_all_customers_with_ares() -> str:
-    """Hromadná oprava adres všech partnerů v databázi."""
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
     rows = cur.execute("SELECT ICO FROM obchpartner").fetchall()
     fixed = 0; skipped = 0; prog = st.progress(0)
@@ -187,7 +183,7 @@ def repair_all_customers_with_ares() -> str:
     return f"Hromadná oprava dokončena. Vyčištěno {fixed} záznamů."
 
 # ==========================================
-# 4. PDF ENGINE (PROFESIONÁLNÍ)
+# 4. PDF ENGINE (PROFESIONÁLNÍ LAYOUT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -241,7 +237,7 @@ def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note
     pdf.cell(35, 7, "Cena/jedn.", border=1, align="R", fill=True)
     pdf.cell(40, 7, "Celkem", border=1, align="R", fill=True); pdf.ln()
 
-    # Položky (Bez kategorií - čistý list)
+    # Položky (Plochý seznam bez kategorií)
     pdf.set_font(pdf.pismo_name, "", 8)
     for name, qty, price in items_flat:
         pdf.cell(100, 6, f" {name}", border="LR")
@@ -264,9 +260,9 @@ def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 5. STREAMLIT UI (STYL V4.0 + MOZEK V8.1)
+# 5. STREAMLIT UI (MAXIMÁLNÍ STABILITA)
 # ==========================================
-st.set_page_config(page_title="Urbánek Master Pro v8.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Master Pro v8.2", layout="wide", page_icon="🛡️")
 
 def load_all_customers():
     if not os.path.exists(DB_PATH): return None
@@ -280,7 +276,7 @@ df_customers = load_all_customers()
 with st.sidebar:
     st.header("🏢 Hlavička dokladu")
     if df_customers is not None:
-        sq = st.text_input("🔍 Vyhledat (IČO/Název):")
+        sq = st.text_input("🔍 Vyhledat partnera (IČO/Název):")
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
@@ -290,10 +286,10 @@ with st.sidebar:
             sel = st.selectbox("Zvolte odběratele:", opts)
             curr = filt.iloc[opts.tolist().index(sel)].to_dict()
             
-            # SESSION LOGIKA: Automatický ARES při výběru (pokud ještě neproběhl)
+            # SESSION LOGIKA: Ochrana opravených dat
             if st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik["ICO"] != curr["ICO"]:
                 if not curr.get("ARES_OK"):
-                    with st.spinner("Čistím data přes ARES..."):
+                    with st.spinner("Ladění adresy přes ARES..."):
                         ares = get_company_from_ares(curr["ICO"])
                         if ares: 
                             curr.update(ares)
@@ -315,9 +311,9 @@ with st.sidebar:
             st.code(import_all_ceniky()); st.rerun()
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Master Dashboard v8.1 | Robot-Proof Build | Boršov n. Vltavou")
+st.caption("Master Dashboard v8.2 | Robot-Proof Build | Boršov n. Vltavou")
 
-tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "📦 Náhrady & Servis", "🖼️ Tabulky & Značení", "🧾 Souhrn faktury"])
+tabs = st.tabs(["🔥 HP & Servis", "🚰 Požární vodovody", "📦 Náhrady", "🖼️ Tabulky & Značení", "🛠️ ND & Ostatní", "🧾 Export"])
 
 def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     p_val = get_price(cat_key, item_name)
@@ -328,20 +324,19 @@ def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     st.session_state.data_zakazky[item_name] = {"q": q, "p": p}
 
 with tabs[0]:
-    st.subheader("1. Kontrola provozuschopnosti a prodej HP")
+    st.subheader("1. Kontrola provozuschopnosti HP")
     item_row("HP", "Kontrola HP (shodný)", "h1")
     item_row("HP", "Kontrola HP (neshodný opravitelný)", "h2")
     item_row("HP", "Kontrola HP (neopravitelný) + odb. zneprovoznění", "h3")
     item_row("HP", "Hodinová sazba za provedení prací", "h5", step_val=0.05)
-    item_row("HP", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", "h4")
+    st.divider(); st.subheader("Příslušenství HP")
     item_row("HP", "Skříň na HP 9kg KOM 9 AZ/O", "h11")
 
 with tabs[1]:
     st.subheader("2. Zařízení pro zásobování požární vodou")
-    st.info("Měření hydrodynamického tlaku a průtoku certifikovaným zařízením dle vyhl. 246/2001 Sb.")
+    st.info("Prováděno měření průtoku a tlaku certifikovaným zařízením dle vyhl. 246/2001 Sb.")
     item_row("Voda", "Prohlídka zařízení od 11 do 20 ks výtoků", "v1")
     item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant. systémů", "v3")
-    item_row("ND_Voda", "Hydrantový box - zámek/okénko", "ndv1")
 
 with tabs[2]:
     st.subheader("3. Servisní úkony a náhrady")
@@ -354,16 +349,21 @@ with tabs[3]:
     st.subheader("4. Bezpečnostní tabulky a značení")
     item_row("TAB", "Tabulka - Hasicí přístroj (plast)", "t1")
     item_row("TABFOTO", "Info.plast.fotolumin. 300x150mm", "tf1")
-    item_row("Ostatni", "Technicko organizační činnost v PO", "o1")
+    item_row("reklama", "Polep firemním logem", "r1")
 
 with tabs[4]:
+    st.subheader("5. Náhradní díly a ostatní")
+    item_row("ND_HP", "Věšák Delta W+PG NEURUPPIN", "nd1")
+    item_row("HILTI", "Protipožární ucpávka Hilti", "hi1")
+    item_row("Ostatni", "Technicko organizační činnost v PO", "o1")
+
+with tabs[5]:
     active_items = {k: v for k, v in st.session_state.data_zakazky.items() if v["q"] > 0}
     if not active_items:
-        st.warning("Doklad neobsahuje žádné položky. Vyplňte množství v předchozích záložkách.")
+        st.warning("Doklad neobsahuje žádné položky.")
     else:
         grand_total = sum(vals["q"] * vals["p"] for vals in active_items.values())
-        st.write(f"### Náhled rekapitulace pro: {st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else 'Neznámý'}")
-        
+        st.write(f"### Rozpis pro: {st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else 'Neznámý'}")
         flat_list = [[k, v["q"], v["p"]] for k, v in active_items.items()]
         st.table([{"Položka": row[0], "Ks": f"{row[1]:.2f}".rstrip("0").rstrip("."), "Celkem": f"{row[1]*row[2]:,.2f} Kč"} for row in flat_list])
         
