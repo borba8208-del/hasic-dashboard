@@ -27,7 +27,7 @@ DEFAULTS = {
     "pv_kolecko": 3.50, "p6": 1090.00, "v9": 1370.00, "vesak": 35.00, "toc": 4488.00
 }
 
-# Inicializace stavů
+# Inicializace session state
 if 'data_zakazky' not in st.session_state:
     st.session_state.data_zakazky = {}
 if 'vybrany_zakaznik' not in st.session_state:
@@ -53,7 +53,7 @@ def search_customers(df, query):
     if not query or df is None:
         return df
     q = query.lower()
-    # Vyhledávání dle sloupců z XML exportu
+    # Vyhledávání dle sloupců z XML (FIRMA, ICO, ADRESA3, PSC)
     mask = (
         df["ICO"].astype(str).str.contains(q, na=False) |
         df["FIRMA"].str.lower().str.contains(q, na=False) |
@@ -111,10 +111,14 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     pdf.set_font(pdf.pismo_name, "B", 16)
     pdf.cell(0, 10, doc_title, ln=True)
     pdf.set_font(pdf.pismo_name, "", 12)
-    # Adresa zákazníka do PDF
+    
+    # Identifikace zákazníka
     klient_str = f"{zakaznik['FIRMA']} (IČO: {zakaznik['ICO']})"
     pdf.cell(0, 10, f"Odběratel: {klient_str}", ln=True)
-    pdf.cell(0, 10, f"Adresa: {zakaznik['ADRESA1']}, {zakaznik['PSC']} {zakaznik['ADRESA3']}", ln=True)
+    
+    # Oprava adresy: ADRESA3 je město, PSC je PSČ. Ulice v tomto exportu není.
+    adresa_radek = f"{zakaznik.get('PSC', '')} {zakaznik.get('ADRESA3', '')}".strip()
+    pdf.cell(0, 10, f"Adresa: {adresa_radek}", ln=True)
     pdf.ln(5)
 
     for cat_name, items in categories.items():
@@ -149,7 +153,7 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
 # ==========================================
 # 4. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v4.9", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v5.0", layout="wide", page_icon="🛡️")
 
 df_customers = load_customers()
 
@@ -164,7 +168,6 @@ with st.sidebar:
             options = filtered["FIRMA"] + " (" + filtered["ICO"].astype(str) + ")"
             selection = st.selectbox("Vyberte partnera:", options)
             
-            # Uložení do session state
             idx = options[options == selection].index[0]
             st.session_state.vybrany_zakaznik = filtered.loc[idx].to_dict()
             st.success(f"Vybráno: {st.session_state.vybrany_zakaznik['FIRMA']}")
@@ -176,7 +179,6 @@ with st.sidebar:
     st.divider()
     st.header("📝 Detaily zakázky")
     
-    # Automatické předvyplnění z DB
     def_klient = st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else "Ruční zadání..."
     klient_pdf = st.text_input("Název na dokumentu:", value=def_klient)
     
@@ -185,7 +187,7 @@ with st.sidebar:
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Verze 4.9 | Sjednocená databáze partnerů | Mobilní asistent")
+st.caption("Verze 5.0 | Oprava adresy v PDF | Mobilní asistent")
 
 if st.session_state.vybrany_zakaznik:
     with st.expander("📌 Detail vybraného zákazníka"):
@@ -253,9 +255,12 @@ with tabs[4]:
                 st.error("Vyberte prosím nejdříve zákazníka v Sidebaru pro správné údaje na PDF.")
             else:
                 note = "Poznámka: Kontroly jsou prováděny dle vyhlášky 246/2001 Sb. a odborných pokynů výrobců. Zpracováno v systému W-SERVIS."
-                pdf_bytes = create_report_pdf(st.session_state.vybrany_zakaznik, structured_data, grand_total, sazba, f"Rozpis prací k č. {source_dl}", note)
-                if pdf_bytes:
-                    st.download_button(label="⬇️ Stáhnout PDF", data=pdf_bytes, file_name=f"Rozpis_{source_dl}.pdf", mime="application/pdf")
+                try:
+                    pdf_bytes = create_report_pdf(st.session_state.vybrany_zakaznik, structured_data, grand_total, sazba, f"Rozpis prací k č. {source_dl}", note)
+                    if pdf_bytes:
+                        st.download_button(label="⬇️ Stáhnout PDF", data=pdf_bytes, file_name=f"Rozpis_{source_dl.replace('/', '_')}.pdf", mime="application/pdf")
+                except Exception as e:
+                    st.error(f"Chyba při generování PDF: {e}")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v4.9 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v5.0 | RT: Ilja Urbánek")
