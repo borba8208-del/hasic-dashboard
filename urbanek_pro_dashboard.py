@@ -1,10 +1,12 @@
 import streamlit as st
 import datetime
 from fpdf import FPDF
+import sqlite3
+import pandas as pd
 import os
 
 # ==========================================
-# 1. KONFIGURACE FIRMY A DATA (Dle předlohy)
+# 1. KONFIGURACE FIRMY A DATABÁZE
 # ==========================================
 FIRMA = {
     "název": "Ilja Urbánek - HASIČ-SERVIS",
@@ -15,47 +17,52 @@ FIRMA = {
     "založeno": 1994
 }
 
-# Kompletní výchozí ceník z předlohy DL 1064 a PV 7743
+# Výchozí ceny (DNA firmy Urbánek)
 DEFAULTS = {
-    # 1. KONTROLY HASÍCÍCH PŘÍSTROJŮ
-    "hp_shodny": 29.40,
-    "hp_opravitelny": 19.70,
-    "hp_likvidace": 23.50,
-    "hp_manipulace": 24.00,
-    "hp_hod_sazba": 450.00,
-    "hp_obec_do_90": 44.40,
-    "hp_obec_nad_90": 107.00,
-    "hp_zapujcka": 155.00,
-    "hp_montaz": 150.00,
-    "hp_vyhodnoceni": 5.80,
-    # 2. NÁHRADY (HP)
-    "nh_prevzeti": 88.00,
-    "nh_kolecka": 3.50,
-    "nh_stitky": 8.00,
-    "nh_km_osobni": 13.80,
-    "nh_km_prives": 16.00,
-    "nh_km_nakladni": 15.90,
-    "nh_komunikace": 48.00,
-    # 3. KONTROLY PV (Vodovody - Větrná 13)
-    "pv_prohlidka": 193.00,
-    "pv_hydro_pausal": 352.00,
-    "pv_mereni_ks": 95.00,
-    "pv_hodinova_sazba": 450.00,
-    "pv_vyhodnoceni": 153.00,
-    "pv_zprava": 170.00,
-    "pv_kolecko": 3.50,
-    # 4. PRODEJ
-    "p6": 1090.00,
-    "v9": 1370.00,
-    "vesak": 35.00,
-    "toc": 4488.00
+    "hp_shodny": 29.40, "hp_opravitelny": 19.70, "hp_likvidace": 23.50, "hp_pojezdny_s": 166.60,
+    "hp_pojezdny_n": 111.60, "hp_hod_sazba": 450.00, "hp_obec_do_90": 44.40, "hp_obec_nad_90": 107.00,
+    "hp_zapujcka": 155.00, "hp_montaz": 150.00, "hp_vyhodnoceni": 5.80, "nh_prevzeti": 88.00,
+    "nh_kolecka": 3.50, "nh_stitky": 8.00, "nh_km_osobni": 13.80, "nh_km_prives": 16.00,
+    "nh_km_nakladni": 15.90, "nh_komunikace": 48.00, "pv_prohlidka": 193.00, "pv_hydro_pausal": 352.00,
+    "pv_mereni_ks": 95.00, "pv_hodinova_sazba": 450.00, "pv_vyhodnoceni": 153.00, "pv_zprava": 170.00,
+    "pv_kolecko": 3.50, "p6": 1090.00, "v9": 1370.00, "vesak": 35.00, "toc": 4488.00
 }
 
 if 'data' not in st.session_state:
     st.session_state.data = {}
 
 # ==========================================
-# 2. PDF ENGINE (UNICODE A CLOUD-READY)
+# 2. DATABÁZOVÝ MODUL (SQLITE READ-ONLY)
+# ==========================================
+def load_customers():
+    db_path = "data/data.db"
+    if not os.path.exists(db_path):
+        return None
+    try:
+        # Připojení v režimu jen pro čtení přes URI
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        df = pd.read_sql("SELECT * FROM obchpartner", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Chyba při načítání databáze: {e}")
+        return None
+
+def search_customers(df, query):
+    if not query or df is None:
+        return df
+    q = query.lower()
+    # Vyhledávání napříč sloupci IČO, Název, Adresa, Město
+    mask = (
+        df["ICO"].astype(str).str.contains(q, case=False, na=False) |
+        df["NAZEV"].str.lower().str.contains(q, na=False) |
+        df["ADRESA"].str.lower().str.contains(q, na=False) |
+        df["MESTO"].str.lower().str.contains(q, na=False)
+    )
+    return df[mask]
+
+# ==========================================
+# 3. PDF ENGINE (UNICODE SUPPORT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -64,10 +71,9 @@ class UrbaneKPDF(FPDF):
         self.pismo_name = "ArialCZ"
         font_variants = {
             "regular": ["arial.ttf", "ARIAL.TTF", "Arial.ttf"],
-            "bold": ["arialbd.ttf", "ARIALBD.TTF", "Arialbd.ttf"],
-            "italic": ["ariali.ttf", "ARIALI.TTF", "Ariali.ttf"]
+            "bold": ["arialbd.ttf", "ARIALBD.TTF", "Arialbd.ttf"]
         }
-        found = {"regular": None, "bold": None, "italic": None}
+        found = {"regular": None, "bold": None}
         for style, names in font_variants.items():
             for name in names:
                 if os.path.exists(name):
@@ -85,8 +91,6 @@ class UrbaneKPDF(FPDF):
             try:
                 self.add_font(self.pismo_name, "", found["regular"])
                 self.add_font(self.pismo_name, "B", found["bold"])
-                if found["italic"]:
-                    self.add_font(self.pismo_name, "I", found["italic"])
                 self.pismo_ok = True
             except: self.pismo_ok = False
         else: self.pismo_ok = False
@@ -108,8 +112,7 @@ class UrbaneKPDF(FPDF):
 
 def create_report_pdf(klient, categories, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
-    if not pdf.pismo_ok:
-        return None
+    if not pdf.pismo_ok: return None
     pdf.add_page()
     pdf.set_font(pdf.pismo_name, "B", 16)
     pdf.cell(0, 10, doc_title, ln=True)
@@ -120,19 +123,16 @@ def create_report_pdf(klient, categories, total_zaklad, sazba, doc_title, note_t
     for cat_name, items in categories.items():
         active_items = [i for i in items if i[1] > 0]
         if not active_items: continue
-        
         pdf.ln(2)
         pdf.set_font(pdf.pismo_name, "B", 10)
         pdf.set_fill_color(240, 240, 240)
-        pdf.cell(0, 8, cat_name, ln=True, fill=True, border="TB")
-        
+        pdf.cell(0, 8, cat_name.upper(), ln=True, fill=True, border="TB")
         pdf.set_font(pdf.pismo_name, "B", 8)
-        pdf.cell(100, 7, "Položka / úkon (v souladu s vyhl. 246/2001 Sb.)", border=1)
+        pdf.cell(100, 7, "Položka / úkon (dle vyhl. 246/2001 Sb.)", border=1)
         pdf.cell(15, 7, "Ks", border=1, align='C')
         pdf.cell(35, 7, "Cena/ks", border=1, align='R')
         pdf.cell(40, 7, "Celkem", border=1, align='R')
         pdf.ln()
-
         pdf.set_font(pdf.pismo_name, "", 8)
         for name, qty, price in active_items:
             pdf.cell(100, 7, name, border=1)
@@ -150,34 +150,53 @@ def create_report_pdf(klient, categories, total_zaklad, sazba, doc_title, note_t
     pdf.set_text_color(200, 0, 0)
     pdf.cell(150, 10, f"CELKEM K ÚHRADĚ VČ. DPH {int(sazba*100)}%:", align='R')
     pdf.cell(40, 10, f"{total_zaklad * (1+sazba):,.2f} Kč", align='R')
-    
     pdf.set_text_color(0, 0, 0)
     if note_text:
         pdf.ln(10)
         pdf.set_font(pdf.pismo_name, "I", 9)
         pdf.multi_cell(0, 5, note_text)
-    
     return bytes(pdf.output())
 
 # ==========================================
-# 3. STREAMLIT UI (MODULÁRNÍ DLE DL)
+# 4. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v4.6", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v4.8", layout="wide", page_icon="🛡️")
 
-pdf_tester = UrbaneKPDF()
+# Načtení databáze
+df_customers = load_customers()
 
 with st.sidebar:
-    st.header("🏢 Hlavička zakázky")
-    klient_val = st.text_input("Zákazník (Odběratel)", value="Domov pro seniory Máj")
-    source_dl = st.text_input("Číslo DL (Zdroj)", value="1064")
+    st.header("🏢 Výběr zákazníka")
+    default_klient_name = "Domov pro seniory Máj"
+    
+    if df_customers is not None:
+        search_query = st.text_input("🔍 Hledat (IČO, Název, Adresa):", placeholder="Začněte psát...")
+        filtered = search_customers(df_customers, search_query)
+        
+        if search_query and not filtered.empty:
+            options = filtered["NAZEV"] + " (" + filtered["ICO"].astype(str) + ")"
+            selected_option = st.selectbox("Vyberte ze seznamu:", options)
+            selected_name = selected_option.split(" (")[0]
+            selected_data = filtered[filtered["NAZEV"] == selected_name].iloc[0]
+            
+            st.success(f"Vybráno: {selected_name}")
+            st.caption(f"📍 {selected_data['ADRESA']}, {selected_data['MESTO']}")
+            default_klient_name = selected_name
+        elif search_query:
+            st.warning("Zákazník nenalezen.")
+    else:
+        st.error("⚠️ Databáze data/data.db nebyla nalezena.")
+        st.info("Nahrajte data.db do složky data na GitHubu.")
+
+    st.divider()
+    st.header("📝 Detaily dokladu")
+    klient_val = st.text_input("Odběratel na PDF:", value=default_klient_name)
+    source_dl = st.text_input("Číslo DL (Zdroj):", value="1064")
     je_svj = st.toggle("Snížená sazba DPH 12% (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
-    st.divider()
-    if pdf_tester.pismo_ok: st.success("✅ Písmo Arial detekováno")
-    else: st.error("⚠️ Písmo nenalezeno! Nahrajte arial.ttf na GitHub.")
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Verze 4.6 | Přesné položky dle předlohy DL 1064")
+st.caption("Verze 4.8 | Databáze obchpartner.csv | Mobilní asistent")
 
 tabs = st.tabs(["🔥 Hasicí přístroje & Náhrady", "🚰 Požární vodovody", "🛠️ Odborná činnost", "📦 Prodej zboží", "🧾 Souhrn & Export"])
 
@@ -189,81 +208,54 @@ def item_row(category, name, default_q, default_p, key, step_q=1.0):
     st.session_state.data[name] = {'q': q, 'p': p, 'cat': category}
     return q * p
 
-# --- ZÁLOŽKA: HP & NÁHRADY ---
+# --- ZÁLOŽKY ---
 with tabs[0]:
     st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
     item_row("HP", "Kontrola HP (shodný)", 0, DEFAULTS["hp_shodny"], "h1")
     item_row("HP", "Kontrola HP (neshodný opravitelný)", 0, DEFAULTS["hp_opravitelny"], "h2")
     item_row("HP", "Kontrola HP (neshodný - neopravitelný) + odb. zneprovoznění", 0, DEFAULTS["hp_likvidace"], "h3")
-    item_row("HP", "Manipulace a odvoz HP k násl. údržbě-TZ,opravě-plnění,demontáži", 0, DEFAULTS["hp_manipulace"], "h4")
-    item_row("HP", "Hodinová sazba za provedení prací - mimo uvedených", 0, DEFAULTS["hp_hod_sazba"], "h5", step_q=0.05)
-    item_row("HP", "Náklady v obci do 90 tisích obyvatel", 0, DEFAULTS["hp_obec_do_90"], "h6")
-    item_row("HP", "Náklady v obci nad 90 tisíc obyvatel", 0, DEFAULTS["hp_obec_nad_90"], "h7")
-    item_row("HP", "Zápůjčka za HP v údržbě (ČSN ISO11602-2, čl. 4.1.4)", 0, DEFAULTS["hp_zapujcka"], "h8")
-    item_row("HP", "Montáž - instalace nebo přemístění věšáku (držáku) HP/skříně na HP", 0, DEFAULTS["hp_montaz"], "h9")
-    item_row("HP", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)", 0, DEFAULTS["hp_vyhodnoceni"], "h10")
-    
+    item_row("HP", "Hodinová sazba za provedení prací", 0, DEFAULTS["hp_hod_sazba"], "h5", step_q=0.05)
+    item_row("HP", "Vyhodnocení kontroly + vystavení dokladu (á 1ks HP)", 0, DEFAULTS["hp_vyhodnoceni"], "h10")
     st.divider()
-    st.subheader("2. NÁHRADY (Hasicí přístroje)")
-    item_row("Náhrady", "Převzetí HP vyřazeného z užívání dodavatelem", 0, DEFAULTS["nh_prevzeti"], "n1")
+    st.subheader("2. NÁHRADY")
     item_row("Náhrady", "Označení - vylepení koleček o kontrole (á 2ks / HP)", 0, DEFAULTS["nh_kolecka"], "n2")
-    item_row("Náhrady", "Označení - vylepení štítku o kontrole (á 1ks/HP)", 0, DEFAULTS["nh_stitky"], "n3")
     item_row("Náhrady", "Náhrada za 1km - osobní servisní vozidlo", 0, DEFAULTS["nh_km_osobni"], "n4", step_q=1.0)
-    item_row("Náhrady", "Náhrada za 1km - osobní servisní vozidlo + přívěs", 0, DEFAULTS["nh_km_prives"], "n5")
-    item_row("Náhrady", "Náhrada za použití komunikačního kanálu (ověření rejstříků)", 0, DEFAULTS["nh_komunikace"], "n6")
 
-# --- ZÁLOŽKA: VODOVODY ---
 with tabs[1]:
-    st.subheader("1. KONTROLY ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU")
-    item_row("PV", "Prohlídka zařízení od 11 do 20 ks výtoků", 0, DEFAULTS["pv_prohlidka"], "v1")
-    item_row("PV", "Kontrola zařízení bez měření průtoku od 11 do 20 ks výtoků", 0, DEFAULTS["pv_hydro_pausal"], "v2")
+    st.subheader("ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU")
     item_row("PV", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 0, DEFAULTS["pv_mereni_ks"], "v3")
     item_row("PV", "Hod.sazba (pochůzky po objektu/ manipulace s HP/PV)", 0, DEFAULTS["pv_hodinova_sazba"], "v4", step_q=0.05)
-    
-    st.divider()
-    st.subheader("2. VYHODNOCENÍ KONTROLY + NÁHRADY (Vodovody)")
-    item_row("PV", "Vyhodnocení kontroly zařízení od 11 do 20 ks výtoků", 0, DEFAULTS["pv_vyhodnoceni"], "v5")
-    item_row("PV", "Vyhotovení zprávy o kontrole zařízení pro zásob.pož.vodou", 0, DEFAULTS["pv_zprava"], "v6")
-    item_row("PV", "Označení - vylepení koleček o kontrole (PV)", 0, DEFAULTS["pv_kolecko"], "v7")
+    item_row("PV", "Vyhodnocení kontroly zařízení PV", 0, DEFAULTS["pv_vyhodnoceni"], "v5")
+    item_row("PV", "Vyhotovení zprávy o kontrole zařízení PBZ", 0, DEFAULTS["pv_zprava"], "v6")
 
-# --- OSTATNÍ ZÁLOŽKY ---
 with tabs[2]:
-    st.subheader("Technicko organizační činnost")
+    st.subheader("TECHNICKO-ORGANIZAČNÍ ČINNOST")
     item_row("TOC", "Technicko organizační činnost v PO (jedn.)", 0, DEFAULTS["toc"], "t1")
 
 with tabs[3]:
-    st.subheader("Prodej materiálu a zboží")
+    st.subheader("PRODEJ MATERIÁLU A ZBOŽÍ")
     item_row("Zboží", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", 0, DEFAULTS["p6"], "p1")
     item_row("Zboží", "Hasicí přístroj V9Ti / V9LEc (voda)", 0, DEFAULTS["v9"], "p2")
-    item_row("Zboží", "Věšák Delta W+PG NEURUPPIN", 0, DEFAULTS["vesak"], "p3")
 
 with tabs[4]:
-    st.subheader("📊 Finální rekapitulace")
+    st.subheader("📊 Rekapitulace a Export")
     active_data = {k: v for k, v in st.session_state.data.items() if v['q'] > 0}
-    
     if not active_data: st.warning("Zadejte množství v záložkách.")
     else:
         grand_total = sum(v['q'] * v['p'] for v in active_data.values())
         st.write(f"### Rozpis pro: {klient_val}")
-        
-        # Seskupení pro tabulku
         cats = sorted(list(set([v['cat'] for v in active_data.values()])))
-        structured_data = {}
-        for c in cats:
-            structured_data[c] = [(k, v['q'], v['p']) for k, v in active_data.items() if v['cat'] == c]
-
+        structured_data = {c: [(k, v['q'], v['p']) for k, v in active_data.items() if v['cat'] == c] for c in cats}
         for cat, items in structured_data.items():
-            st.markdown(f"**{cat}**")
+            st.markdown(f"**{cat.upper()}**")
             st.table([{"Položka": i[0], "Ks": f"{i[1]:.2f}".rstrip('0').rstrip('.'), "Celkem": f"{i[1]*i[2]:,.2f} Kč"} for i in items])
-        
         st.divider()
         st.metric("CELKEM BEZ DPH", f"{grand_total:,.2f} Kč")
-        
-        if st.button("📄 Vygenerovat PDF Rozpis (Dle DL 1064/7743)"):
-            note = "Poznámka: Kontroly jsou prováděny dle vyhlášky 246/2001 Sb. a odborných pokynů výrobců. Zpracováno v systému W-SERVIS."
+        if st.button("📄 Vygenerovat PDF Rozpis"):
+            note = "Poznámka: Kontroly jsou prováděny dle vyhlášky 246/2001 Sb. Zpracováno v systému W-SERVIS."
             pdf_bytes = create_report_pdf(klient_val, structured_data, grand_total, sazba, f"Rozpis k dodacímu listu č. {source_dl}", note)
             if pdf_bytes:
                 st.download_button(label="⬇️ Stáhnout PDF", data=pdf_bytes, file_name=f"DL_{source_dl}_{klient_val.replace(' ','_')}.pdf", mime="application/pdf")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.6 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.8 | RT: Ilja Urbánek")
