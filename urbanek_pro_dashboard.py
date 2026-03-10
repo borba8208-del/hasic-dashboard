@@ -27,7 +27,6 @@ DEFAULTS = {
     "pv_kolecko": 3.50, "p6": 1090.00, "v9": 1370.00, "vesak": 35.00, "toc": 4488.00
 }
 
-# Inicializace session state
 if 'data_zakazky' not in st.session_state:
     st.session_state.data_zakazky = {}
 if 'vybrany_zakaznik' not in st.session_state:
@@ -62,7 +61,7 @@ def search_customers(df, query):
     return df[mask]
 
 # ==========================================
-# 3. PDF ENGINE (UNICODE A FIX FONTŮ)
+# 3. PDF ENGINE (VYLEPŠENÝ UNICODE)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -70,56 +69,66 @@ class UrbaneKPDF(FPDF):
         self.pismo_ok = False
         self.italic_ok = False
         self.pismo_name = "ArialCZ"
-        # Linux v Cloudu vyžaduje přesné názvy malými písmeny
-        font_variants = {
-            "regular": ["arial.ttf", "ARIAL.TTF"],
-            "bold": ["arialbd.ttf", "ARIALBD.TTF"],
-            "italic": ["ariali.ttf", "ARIALI.TTF"]
-        }
-        found = {"regular": None, "bold": None, "italic": None}
-        for style, names in font_variants.items():
-            for name in names:
-                if os.path.exists(name): found[style] = name; break
         
-        # Lokální Windows Fallback
-        if not found["regular"]:
+        # Lokální cesty (GitHub / Streamlit Cloud)
+        # Linux rozlišuje arial.ttf vs ARIAL.TTF!
+        variants = {
+            "regular": ["arial.ttf", "ARIAL.TTF", "Arial.ttf"],
+            "bold": ["arialbd.ttf", "ARIALBD.TTF", "Arialbd.ttf"],
+            "italic": ["ariali.ttf", "ARIALI.TTF", "Ariali.ttf"]
+        }
+        
+        self.found_files = {"regular": None, "bold": None, "italic": None}
+        for style, names in variants.items():
+            for name in names:
+                if os.path.exists(name):
+                    self.found_files[style] = name
+                    break
+        
+        # Windows fallback (pro lokální testování)
+        if not self.found_files["regular"]:
             win_path = "C:/Windows/Fonts/"
-            for style, names in font_variants.items():
+            for style, names in variants.items():
                 for name in names:
-                    full_p = os.path.join(win_path, name)
-                    if os.path.exists(full_p): found[style] = full_p; break
+                    full = os.path.join(win_path, name)
+                    if os.path.exists(full):
+                        self.found_files[style] = full
+                        break
 
-        if found["regular"] and found["bold"]:
+        # Přidání písem do FPDF
+        if self.found_files["regular"] and self.found_files["bold"]:
             try:
-                self.add_font(self.pismo_name, "", found["regular"])
-                self.add_font(self.pismo_name, "B", found["bold"])
-                if found["italic"]:
-                    self.add_font(self.pismo_name, "I", found["italic"])
+                self.add_font(self.pismo_name, "", self.found_files["regular"])
+                self.add_font(self.pismo_name, "B", self.found_files["bold"])
+                if self.found_files["italic"]:
+                    self.add_font(self.pismo_name, "I", self.found_files["italic"])
                     self.italic_ok = True
                 self.pismo_ok = True
-            except: self.pismo_ok = False
-        else: self.pismo_ok = False
+            except:
+                self.pismo_ok = False
 
     def header(self):
-        f_style = self.pismo_name if self.pismo_ok else 'helvetica'
-        self.set_font(f_style, 'B', 14)
+        # Pokud písmo není OK, fpdf2 vyhodí chybu místo helvetiky, což je pro nás lepší pro debugging
+        self.set_font(self.pismo_name, 'B', 14)
         self.cell(0, 10, FIRMA_VLASTNI["název"], ln=True)
-        self.set_font(f_style, '', 9)
+        self.set_font(self.pismo_name, '', 9)
         self.cell(0, 5, f"Specialista na požární bezpečnost | Tradice od 1994 | {FIRMA_VLASTNI['sídlo']}", ln=True)
         self.line(10, 28, 200, 28)
         self.ln(10)
 
     def footer(self):
         self.set_y(-15)
-        f_style = self.pismo_name if self.pismo_ok else 'helvetica'
-        # Bezpečné použití kurzívy
-        final_style = 'I' if (self.pismo_ok and self.italic_ok) else ''
-        self.set_font(f_style, final_style, 8)
+        # Použije kurzívu jen pokud je dostupná
+        style = 'I' if self.italic_ok else ''
+        self.set_font(self.pismo_name, style, 8)
         self.cell(0, 10, f"Systém W-SERVIS | Odborná certifikace: {FIRMA_VLASTNI['certifikace']} | Strana {self.page_no()}", align='C')
 
 def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
-    if not pdf.pismo_ok: return None
+    if not pdf.pismo_ok:
+        st.error("❌ Písmo Arial nebylo nalezeno. PDF by nemělo diakritiku. Nahrajte arial.ttf a arialbd.ttf na GitHub.")
+        return None
+    
     pdf.add_page()
     pdf.set_font(pdf.pismo_name, "B", 16)
     pdf.cell(0, 10, doc_title, ln=True)
@@ -161,52 +170,53 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     
     if note_text:
         pdf.ln(10)
-        final_n_style = 'I' if (pdf.pismo_ok and pdf.italic_ok) else ''
-        pdf.set_font(pdf.pismo_name, final_n_style, 9)
+        style = 'I' if pdf.italic_ok else ''
+        pdf.set_font(pdf.pismo_name, style, 9)
         pdf.multi_cell(0, 5, note_text)
     return bytes(pdf.output())
 
 # ==========================================
 # 4. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v5.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v5.2", layout="wide", page_icon="🛡️")
 
 df_customers = load_customers()
+pdf_check = UrbaneKPDF()
 
 with st.sidebar:
     st.header("🏢 Výběr zákazníka")
     
     if df_customers is not None:
-        # Přímý vyhledávací/výběrový prvek
         search_query = st.text_input("🔍 Hledat v databázi:", placeholder="Název, IČO nebo město...")
         filtered = search_customers(df_customers, search_query)
-        
         if not filtered.empty:
-            # Sestavení popisků pro selectbox
             options = filtered["FIRMA"] + " (" + filtered["ICO"].astype(str) + ")"
-            selection = st.selectbox("Vyberte partnera ze seznamu:", options, index=0)
-            
-            # Najdeme index a uložíme data
+            selection = st.selectbox("Vyberte partnera:", options, index=0)
             actual_idx = filtered.index[options == selection].tolist()[0]
             st.session_state.vybrany_zakaznik = filtered.loc[actual_idx].to_dict()
-            st.success(f"📍 {st.session_state.vybrany_zakaznik['ADRESA3']}")
         else:
             st.warning("Nenalezeno.")
     else:
         st.error("⚠️ Databáze data/data.db nenalezena.")
 
     st.divider()
+    st.header("⚙️ Kontrola písem")
+    if pdf_check.pismo_ok:
+        st.success("✅ Písmo Arial je v pořádku")
+    else:
+        st.error("❌ Písmo Arial chybí!")
+        st.info("Nahrajte na GitHub tyto soubory:\n1. arial.ttf\n2. arialbd.ttf")
+
+    st.divider()
     st.header("📝 Detaily zakázky")
-    
     def_klient = st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else "Ruční zadání..."
     klient_pdf = st.text_input("Odběratel (na dokumentu):", value=def_klient)
-    
     source_dl = st.text_input("Číslo DL / Zakázky:", value="2026/001")
-    je_svj = st.toggle("Sazba DPH 12% (SVJ / Bytové domy)", value=True)
+    je_svj = st.toggle("Sazba DPH 12% (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Verze 5.1 | Přímý výběr zákazníka | Fix patičky PDF")
+st.caption("Verze 5.2 | Fix diakritiky (Přelouč Test) | Mobilní asistent")
 
 if st.session_state.vybrany_zakaznik:
     with st.expander("📌 Detail vybraného zákazníka"):
@@ -214,7 +224,7 @@ if st.session_state.vybrany_zakaznik:
         c1, c2, c3 = st.columns(3)
         c1.write(f"**IČO:** {z['ICO']}")
         c2.write(f"**DIČ:** {z['DIC']}")
-        c3.write(f"**Město:** {z['ADRESA3']} ({z['PSC']})")
+        c3.write(f"**Lokalita:** {z['ADRESA3']} ({z['PSC']})")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "🛠️ Odborná činnost", "📦 Prodej zboží", "🧾 Souhrn & Export"])
 
@@ -272,6 +282,8 @@ with tabs[4]:
         if st.button("📄 Vygenerovat PDF Rozpis"):
             if not st.session_state.vybrany_zakaznik:
                 st.error("Vyberte nejdříve zákazníka v Sidebaru.")
+            elif not pdf_check.pismo_ok:
+                st.error("Chybí písma! PDF by bylo nečitelné.")
             else:
                 note = "Poznámka: Kontroly jsou prováděny dle vyhlášky 246/2001 Sb. Zpracováno v systému W-SERVIS."
                 try:
@@ -282,4 +294,5 @@ with tabs[4]:
                     st.error(f"Chyba při generování: {e}")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v5.1 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v5.2 | RT: Ilja Urbánek")
+
