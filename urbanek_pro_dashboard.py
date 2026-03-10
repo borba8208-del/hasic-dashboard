@@ -45,9 +45,8 @@ class UrbaneKPDF(FPDF):
     def __init__(self):
         super().__init__()
         self.pismo_ok = False
-        # V Cloudu musíme použít přesné názvy souborů (Linux je citlivý na malá/velká písmena)
         try:
-            # Zkusíme načíst z aktuální složky (GitHub)
+            # Cloud/Local paths
             self.add_font("ArialCZ", "", "arial.ttf")
             self.add_font("ArialCZ", "B", "arialbd.ttf")
             self.add_font("ArialCZ", "I", "ariali.ttf")
@@ -55,7 +54,6 @@ class UrbaneKPDF(FPDF):
             self.pismo_ok = True
         except:
             try:
-                # Zkusíme Windows cestu pro lokální ladění
                 path = "C:/Windows/Fonts/arial"
                 self.add_font("ArialCZ", "", f"{path}.ttf")
                 self.add_font("ArialCZ", "B", f"{path}bd.ttf")
@@ -63,19 +61,14 @@ class UrbaneKPDF(FPDF):
                 self.pismo = "ArialCZ"
                 self.pismo_ok = True
             except:
-                # Pokud vše selže, fallback na helvetica (ale v cloudu to spadne na češtině)
                 self.pismo = "helvetica"
                 self.pismo_ok = False
 
     def header(self):
-        if self.pismo_ok:
-            self.set_font(self.pismo, 'B', 14)
-        else:
-            self.set_font('helvetica', 'B', 14)
-        
-        # Ošetření textu pro případ, že písmo chybí (odstranění diakritiky by byl nouzový plán)
+        font_style = self.pismo if self.pismo_ok else 'helvetica'
+        self.set_font(font_style, 'B', 14)
         self.cell(0, 10, FIRMA["název"], ln=True)
-        self.set_font(self.pismo, '', 9)
+        self.set_font(font_style, '', 9)
         self.cell(0, 5, f"Specialista na požární bezpečnost | {FIRMA['sídlo']}", ln=True)
         self.line(10, 28, 200, 28)
         self.ln(10)
@@ -88,7 +81,7 @@ class UrbaneKPDF(FPDF):
 def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
     if not pdf.pismo_ok:
-        raise Exception("Chyba písma: Soubory arial.ttf, arialbd.ttf nebo ariali.ttf nebyly nalezeny v repozitáři.")
+        raise Exception("Chyba písma: TTF soubory nebyly nalezeny.")
         
     pdf.add_page()
     pdf.set_font(pdf.pismo, "B", 16)
@@ -110,7 +103,9 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
     for name, vals in items_dict.items():
         if vals['q'] > 0:
             pdf.cell(100, 8, name, border=1)
-            pdf.cell(15, 8, str(vals['q']), border=1, align='C')
+            # Formátování množství (celé číslo vs desetinné)
+            q_display = f"{vals['q']:.2f}".rstrip('0').rstrip('.') if vals['q'] % 1 != 0 else f"{int(vals['q'])}"
+            pdf.cell(15, 8, q_display, border=1, align='C')
             pdf.cell(35, 8, f"{vals['p']:,.2f} Kč", border=1, align='R')
             pdf.cell(40, 8, f"{vals['q'] * vals['p']:,.2f} Kč", border=1, align='R')
             pdf.ln()
@@ -121,7 +116,7 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
     pdf.cell(40, 10, f"{total_zaklad:,.2f} Kč", align='R')
     pdf.ln()
     pdf.set_text_color(200, 0, 0)
-    pdf.cell(150, 10, f"CELKEM K ÚHRADĚ (včetně DPH {int(sazba*100)}%):", align='R')
+    pdf.cell(150, 10, f"CELKEM K ÚHRADĚ (vč. DPH {int(sazba*100)}%):", align='R')
     pdf.cell(40, 10, f"{total_zaklad * (1+sazba):,.2f} Kč", align='R')
     
     if note_text:
@@ -135,75 +130,91 @@ def create_report_pdf(klient, items_dict, total_zaklad, sazba, doc_title, note_t
 # ==========================================
 # 3. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v4.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v4.4", layout="wide", page_icon="🛡️")
 
 with st.sidebar:
     st.header("🏢 Hlavička zakázky")
     klient_val = st.text_input("Zákazník", value="Domov pro seniory Máj")
     source_dl = st.text_input("Číslo DL", value="DL-2026-001")
-    je_svj = st.toggle("Uplatnit sníženou sazbu DPH 12%", value=True)
+    je_svj = st.toggle("Uplatnit 12% DPH (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
     st.divider()
-    st.success("Režim: Cloudový asistent (v4.3)")
+    st.success("Režim: Cloudový asistent (v4.4)")
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Stabilizovaná verze pro terénní provoz | Unicode PDF Fix")
+st.caption("Fix krokování kusů | Verze 4.4")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "🛠️ Odborná činnost", "📦 Prodej zboží", "🧾 Souhrn & Export"])
 
-def item_row(category, name, default_q, default_p, key):
+# VYLEPŠENÝ ŘÁDEK EDITORU S VOLITELNÝM KROKEM
+def item_row(category, name, default_q, default_p, key, step_q=1.0):
     c1, c2, c3 = st.columns([3, 1, 1])
     with c1: st.write(f"**{name}**")
-    with c2: q = st.number_input(f"Q_{key}", min_value=0.0, step=0.1, value=float(default_q), key=f"q_{key}", label_visibility="collapsed")
-    with c3: p = st.number_input(f"P_{key}", min_value=0.0, step=0.1, value=float(default_p), key=f"p_{key}", label_visibility="collapsed")
+    # Změna: Pokud je step_q=1, používáme integer input pro čistší vzhled, jinak float
+    with c2: 
+        q = st.number_input(f"Q_{key}", min_value=0.0, step=float(step_q), value=float(default_q), key=f"q_{key}", label_visibility="collapsed")
+    with c3: 
+        p = st.number_input(f"P_{key}", min_value=0.0, step=0.1, value=float(default_p), key=f"p_{key}", label_visibility="collapsed")
+    
     st.session_state.data[name] = {'q': q, 'p': p, 'cat': category}
     return q * p
 
 # --- ZÁLOŽKY ---
 with tabs[0]:
-    st.subheader("1. Hasicí přístroje (Kontroly)")
-    item_row("HP", "Kontrola HP (shodný)", 0, DEFAULTS["hp_shodny"], "h1")
-    item_row("HP", "Kontrola HP (neshodný - opravitelný)", 0, DEFAULTS["hp_opravitelny"], "h2")
-    item_row("HP", "Vyřazení a odborná likvidace HP (stav NV)", 0, DEFAULTS["hp_likvidace"], "h3")
-    item_row("HP", "Kontrola pojízdného HP (shodný)", 0, DEFAULTS["hp_pojezdny_s"], "h4")
+    st.subheader("1. Hasicí přístroje (Kontroly - krok 1 ks)")
+    item_row("HP", "Kontrola HP (shodný)", 0, DEFAULTS["hp_shodny"], "h1", step_q=1.0)
+    item_row("HP", "Kontrola HP (neshodný - opravitelný)", 0, DEFAULTS["hp_opravitelny"], "h2", step_q=1.0)
+    item_row("HP", "Vyřazení a odborná likvidace HP (stav NV)", 0, DEFAULTS["hp_likvidace"], "h3", step_q=1.0)
+    item_row("HP", "Kontrola pojízdného HP (shodný)", 0, DEFAULTS["hp_pojezdny_s"], "h4", step_q=1.0)
 
 with tabs[1]:
-    st.subheader("2. Zařízení pro zásobování požární vodou")
-    item_row("PV", "Kontrola hydrodyn. tlaku a průtoku (paušál)", 0, DEFAULTS["pv_hydro_pausal"], "v1")
-    item_row("PV", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 0, DEFAULTS["pv_mereni_ks"], "v2")
-    item_row("PV", "Hod.sazba (pochůzky po objektu/ manipulace s HP/PV)", 0, DEFAULTS["pv_hodinova_sazba"], "v3")
-    item_row("PV", "Vyhodnocení kontroly zařízení (paušál)", 0, DEFAULTS["pv_vyhodnoceni"], "v4")
-    item_row("PV", "Vyhotovení zprávy o kontrole zařízení PBZ", 0, DEFAULTS["pv_zprava"], "v5")
-    item_row("PV", "Označení - vylepení koleček o kontrole", 0, DEFAULTS["pv_kolecko"], "v6")
+    st.subheader("2. Požární vodovody (Kombinovaný krok)")
+    item_row("PV", "Kontrola hydrodyn. tlaku a průtoku (paušál)", 0, DEFAULTS["pv_hydro_pausal"], "v1", step_q=1.0)
+    item_row("PV", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 0, DEFAULTS["pv_mereni_ks"], "v2", step_q=1.0)
+    # Tady necháváme krok 0.05 pro přesné hodiny (např. 0.65)
+    item_row("PV", "Hod.sazba (pochůzky po objektu/ manipulace s HP/PV)", 0, DEFAULTS["pv_hodinova_sazba"], "v3", step_q=0.05)
+    item_row("PV", "Vyhodnocení kontroly zařízení (paušál)", 0, DEFAULTS["pv_vyhodnoceni"], "v4", step_q=1.0)
+    item_row("PV", "Vyhotovení zprávy o kontrole zařízení PBZ", 0, DEFAULTS["pv_zprava"], "v5", step_q=1.0)
+    item_row("PV", "Označení - vylepení koleček o kontrole", 0, DEFAULTS["pv_kolecko"], "v6", step_q=1.0)
 
 with tabs[2]:
     st.subheader("3. Technicko organizační činnost")
-    item_row("TOC", "Technicko organizační činnost v PO (školení/dokumentace)", 0, DEFAULTS["toc"], "t1")
+    item_row("TOC", "Technicko organizační činnost v PO (školení/dokumentace)", 0, DEFAULTS["toc"], "t1", step_q=1.0)
 
 with tabs[3]:
-    st.subheader("4. Prodej materiálu a zboží")
-    item_row("Zboží", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", 0, DEFAULTS["p6"], "p1")
-    item_row("Zboží", "Hasicí přístroj V9Ti / V9LEc (voda)", 0, DEFAULTS["v9"], "p2")
-    item_row("Zboží", "Věšák Delta W+PG NEURUPPIN", 0, DEFAULTS["vesak"], "p3")
-    item_row("Zboží", "Pojistka Če/BETA PG/V/Pe/CO", 0, DEFAULTS["pojistka"], "p4")
-    item_row("Zboží", "Informační samolepka", 0, DEFAULTS["samolepka"], "p5")
+    st.subheader("4. Prodej materiálu a zboží (krok 1 ks)")
+    item_row("Zboží", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", 0, DEFAULTS["p6"], "p1", step_q=1.0)
+    item_row("Zboží", "Hasicí přístroj V9Ti / V9LEc (voda)", 0, DEFAULTS["v9"], "p2", step_q=1.0)
+    item_row("Zboží", "Věšák Delta W+PG NEURUPPIN", 0, DEFAULTS["vesak"], "p3", step_q=1.0)
+    item_row("Zboží", "Pojistka Če/BETA PG/V/Pe/CO", 0, DEFAULTS["pojistka"], "p4", step_q=1.0)
+    item_row("Zboží", "Informační samolepka", 0, DEFAULTS["samolepka"], "p5", step_q=1.0)
 
 with tabs[4]:
-    st.subheader("📊 Finální rekapitulace a PDF")
+    st.subheader("📊 Finální rekapitulace")
     final_items = {k: v for k, v in st.session_state.data.items() if v['q'] > 0}
     
     if not final_items:
-        st.warning("Zatím nejsou zadány žádné položky. Vyplňte množství v předchozích záložkách.")
+        st.warning("Zadejte množství v záložkách.")
     else:
         grand_total = sum(v['q'] * v['p'] for v in final_items.values())
         st.write(f"### Rozpis pro: {klient_val}")
-        st.table([{"Položka": k, "Množství": v['q'], "Celkem": f"{v['q']*v['p']:,.2f} Kč"} for k, v in final_items.items()])
         
+        # Formátování pro tabulku v Streamlitu
+        table_view = []
+        for k, v in final_items.items():
+            q_formated = f"{v['q']:.2f}".rstrip('0').rstrip('.') if v['q'] % 1 != 0 else f"{int(v['q'])}"
+            table_view.append({
+                "Položka": k,
+                "Množství": q_formated,
+                "Jednotková cena": f"{v['p']:,.2f} Kč",
+                "Celkem bez DPH": f"{v['q']*v['p']:,.2f} Kč"
+            })
+        
+        st.table(table_view)
         st.divider()
         st.metric("CELKEM BEZ DPH", f"{grand_total:,.2f} Kč")
         
         if st.button("📄 Vygenerovat a stáhnout PDF Rozpis"):
-            # Kontrola, zda písmo existuje, dříve než začneme
             try:
                 notes = []
                 if any(v['cat'] == 'HP' for v in final_items.values()):
@@ -217,4 +228,4 @@ with tabs[4]:
                 st.error(f"⚠️ {str(e)}")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.3 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA['název']} | Future Firma v4.4 | RT: Ilja Urbánek")
