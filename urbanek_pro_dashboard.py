@@ -11,18 +11,8 @@ import unicodedata
 import re
 
 # ==========================================
-# 1. KONFIGURACE A JEDINÝ ZDROJ PRAVDY
+# CATEGORY_MAP – JEDINÝ ZDROJ PRAVDY
 # ==========================================
-FIRMA_VLASTNI = {
-    "název": "Ilja Urbánek - HASIČ-SERVIS",
-    "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
-    "ico": "60835265",
-    "dic": "CZ5706281691",
-    "certifikace": "TÜV NORD Czech",
-    "založeno": 1994
-}
-
-# CATEGORY_MAP = UI klíč → název CSV (bez .csv)
 CATEGORY_MAP = {
     "HP": "HP",
     "Nahrady": "Nahrady",
@@ -39,16 +29,26 @@ CATEGORY_MAP = {
     "PK": "PK",
     "OZO": "OZO",
     "reklama": "reklama",
-    "revize": "revize",
+    "revize": "revize"
+}
+
+# ==========================================
+# 1. KONFIGURACE FIRMY
+# ==========================================
+FIRMA_VLASTNI = {
+    "název": "Ilja Urbánek - HASIČ-SERVIS",
+    "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
+    "ico": "60835265",
+    "dic": "CZ5706281691",
+    "certifikace": "TÜV NORD Czech",
+    "založeno": 1994
 }
 
 DB_PATH = "data/data.db"
 CSV_FOLDER = "data/ceniky/"
 
-if not os.path.exists("data"):
-    os.makedirs("data")
-if not os.path.exists(CSV_FOLDER):
-    os.makedirs(CSV_FOLDER)
+if not os.path.exists("data"): os.makedirs("data")
+if not os.path.exists(CSV_FOLDER): os.makedirs(CSV_FOLDER)
 
 # Inicializace stavů session
 if "data_zakazky" not in st.session_state:
@@ -64,8 +64,11 @@ def normalize_category(cat_key: str) -> str:
     if not cat_key:
         return "cenik_ostatni"
     s = cat_key.lower().strip()
+    # Odstranění diakritiky
     s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    # Náhrada mezer a lomítek podtržítkem
     s = re.sub(r"[\s/]+", "_", s)
+    # Odstranění speciálních znaků
     s = re.sub(r"[^a-z0-9_]", "", s)
     return f"cenik_{s}"
 
@@ -76,28 +79,35 @@ def import_all_ceniky() -> str:
     for ui_key, csv_name in CATEGORY_MAP.items():
         file_path = os.path.join(CSV_FOLDER, f"{csv_name}.csv")
         table_name = normalize_category(ui_key)
+        
         if not os.path.exists(file_path):
             log.append(f"⚠️ {csv_name}.csv: Nenalezen (UI: {ui_key})")
             continue
+            
         try:
+            # Načtení s českým oddělovačem ;
             df = pd.read_csv(file_path, sep=";", encoding="utf-8")
             df.columns = [c.strip().lower() for c in df.columns]
+            
             if "nazev" not in df.columns or "cena" not in df.columns:
-                log.append(f"❌ {csv_name}.csv: Chybí sloupce (UI: {ui_key})")
+                log.append(f"❌ {csv_name}.csv: Chybí sloupce 'nazev' nebo 'cena'")
                 continue
+                
             cols = [c for c in df.columns if c in ["nazev", "cena", "jednotka"]]
             if "jednotka" not in cols:
                 df["jednotka"] = "ks"
                 cols = ["nazev", "cena", "jednotka"]
+                
             df[cols].to_sql(table_name, conn, if_exists="replace", index=False)
-            log.append(f"✅ {table_name}: {len(df)} položek")
+            log.append(f"✅ {table_name}: {len(df)} položek (zdroj {csv_name}.csv)")
         except Exception as e:
             log.append(f"❌ {csv_name}.csv: Chyba {str(e)}")
+            
     conn.close()
     return "\n".join(log)
 
 def get_price(cat_key: str, item_name: str) -> float:
-    """Bezpečně získá cenu z SQL tabulky."""
+    """Získá cenu položky z konkrétní SQL tabulky ceníku."""
     table = normalize_category(cat_key)
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -109,10 +119,10 @@ def get_price(cat_key: str, item_name: str) -> float:
         return 0.0
 
 # ==========================================
-# 3. ARES A PARTNEŘI (ZÁCHRANA ČEŠTINY)
+# 3. ARES A PARTNEŘI
 # ==========================================
 def get_company_from_ares(ico: str | int):
-    """Hluboký parser ARES API pro opravu diakritiky a adresy."""
+    """Hluboký parser ARES API pro 100% správnou češtinu a adresu."""
     ico = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico}"
     try:
@@ -134,7 +144,7 @@ def get_company_from_ares(ico: str | int):
     except Exception: return None
 
 def update_customer_in_db(z: dict) -> bool:
-    """Trvale uloží vyčištěná data do SQLite."""
+    """Uloží data z ARES trvale do SQLite, včetně ulice a č.p."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -150,7 +160,7 @@ def update_customer_in_db(z: dict) -> bool:
     except Exception: return False
 
 def repair_all_customers_with_ares() -> str:
-    """Hromadný úklid celé databáze podle IČO."""
+    """Hromadná oprava celé databáze partnerů podle IČO."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     rows = cur.execute("SELECT ICO FROM obchpartner").fetchall()
@@ -168,10 +178,10 @@ def repair_all_customers_with_ares() -> str:
         prog.progress((i + 1) / len(rows))
         if i % 10 == 0: time.sleep(0.05)
     conn.close()
-    return f"Hotovo. Opraveno {fixed} záznamů."
+    return f"Hotovo. Opraveno {fixed} firem přes ARES."
 
 # ==========================================
-# 4. PDF ENGINE (PROFESIONÁLNÍ)
+# 4. PDF ENGINE
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -251,7 +261,7 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
 # ==========================================
 # 5. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v6.4", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v6.5", layout="wide", page_icon="🛡️")
 
 def load_all_customers():
     if not os.path.exists(DB_PATH): return None
@@ -265,12 +275,13 @@ df_customers = load_all_customers()
 with st.sidebar:
     st.header("⚙️ Správa systému")
     with st.expander("📦 Ceníky"):
+        st.caption("Synchronizuje ceníky ze složky data/ceniky/ dle mapy.")
         if st.button("🚀 Synchronizovat ceníky (CSV)"):
             st.code(import_all_ceniky()); st.success("Hotovo."); st.rerun()
 
     st.divider(); st.header("👤 Partner")
     if df_customers is not None:
-        sq = st.text_input("🔍 Hledat (IČO/Název):")
+        sq = st.text_input("🔍 Hledat firmu (IČO/Název):")
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
@@ -281,9 +292,8 @@ with st.sidebar:
             idx = filt.index[opts == sel].tolist()[0]
             curr = filt.loc[idx].to_dict()
             
-            # SESSION LOGIKA: Chránit ARES data
+            # SESSION LOGIKA: Ochrana ARES dat
             if st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik["ICO"] != curr["ICO"]:
-                # Pokud ještě neproběhl ARES pro toto IČO v této session
                 if not curr.get("ARES_OK"):
                     with st.spinner("Ladění adresy přes ARES..."):
                         ares = get_company_from_ares(curr["ICO"])
@@ -296,14 +306,14 @@ with st.sidebar:
         if st.button("🛠️ Opravit CELOU DB přes ARES"):
             st.success(repair_all_customers_with_ares()); st.rerun()
     
-    st.divider(); st.header("📝 Detaily")
-    kl_pdf = st.text_input("Odběratel na PDF:", value=st.session_state.vybrany_zakaznik["FIRMA"] if st.session_state.vybrany_zakaznik else "")
-    src_dl = st.text_input("Číslo dokladu:", value=f"{datetime.date.today().year}/XXX")
+    st.divider(); st.header("📝 Detaily dokladu")
+    kl_pdf = st.text_input("Odběratel na dokumentu:", value=st.session_state.vybrany_zakaznik["FIRMA"] if st.session_state.vybrany_zakaznik else "")
+    src_dl = st.text_input("Číslo zakázky:", value=f"{datetime.date.today().year}/XXX")
     je_svj = st.toggle("Uplatnit sníženou sazbu 12% (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v6.4 | Master Dashboard | Deterministické ceníky | 100% čeština z ARESu")
+st.caption("v6.5 | Deterministické ceníky | Jediný zdroj pravdy | 100% čeština")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "📦 Náhrady", "🚰 Požární vodovody", "🛠️ Ostatní", "🧾 Export"])
 
@@ -357,8 +367,8 @@ with tabs[4]:
         if st.button("📄 VYGENEROVAT DOKUMENT PDF"):
             if not st.session_state.vybrany_zakaznik: st.error("Vyberte partnera v bočním panelu.")
             else:
-                note = "Poznámka: Kontrola provozuschopnosti dle vyhl. 246/2001 Sb. U PV provedeno měření certifikovaným zařízením. Zpracováno systémem HASIČ-SERVIS."
+                note = "Poznámka: Kontrola provozuschopnosti dle vyhlšky 246/2001 Sb. U PV provedeno měření certifikovaným zařízením. Zpracováno systémem HASIČ-SERVIS."
                 pdf = create_report_pdf(st.session_state.vybrany_zakaznik, structured, grand_total, sazba, f"Rozpis prací k č. {src_dl}", note)
                 if pdf: st.download_button("⬇️ STÁHNOUT PDF", data=pdf, file_name=f"Rozpis_{src_dl.replace('/','-')}.pdf")
 
-st.divider(); st.caption(f"© {datetime.date.today().year} HASIČ-SERVIS URBÁNEK | Profesionální správa PO")
+st.divider(); st.caption(f"© {datetime.date.today().year} HASIČ-SERVIS URBÁNEK | Boršov n. Vltavou")
