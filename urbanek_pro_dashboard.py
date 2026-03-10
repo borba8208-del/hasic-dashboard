@@ -4,6 +4,7 @@ from fpdf import FPDF
 import sqlite3
 import pandas as pd
 import os
+import requests
 
 # ==========================================
 # 1. KONFIGURACE A DATOVÝ MODEL
@@ -33,7 +34,33 @@ if 'vybrany_zakaznik' not in st.session_state:
     st.session_state.vybrany_zakaznik = None
 
 # ==========================================
-# 2. DATABÁZOVÝ MODUL (SQLITE READ-ONLY)
+# 2. ARES API MODUL (MODERNÍ REST)
+# ==========================================
+def get_company_from_ares(ico):
+    """Získá oficiální data o subjektu z ARES pro opravu diakritiky a adresy."""
+    ico = str(ico).strip().zfill(8) # IČO musí mít 8 znaků
+    url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico}"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            sidlo = data.get("sidlo", {})
+            return {
+                "FIRMA": data.get("obchodniJmeno", ""),
+                "DIC": data.get("dic", ""),
+                "ULICE": sidlo.get("nazevUlice", ""),
+                "CP": sidlo.get("cisloDomovni", ""),
+                "CO": sidlo.get("cisloOrientacni", ""),
+                "ADRESA3": sidlo.get("nazevObce", ""),
+                "PSC": sidlo.get("psc", ""),
+                "ARES_OK": True
+            }
+    except:
+        pass
+    return None
+
+# ==========================================
+# 3. DATABÁZOVÝ MODUL (SQLITE READ-ONLY)
 # ==========================================
 def load_customers():
     db_path = "data/data.db"
@@ -61,7 +88,7 @@ def search_customers(df, query):
     return df[mask]
 
 # ==========================================
-# 3. PDF ENGINE (VYLEPŠENÝ UNICODE)
+# 4. PDF ENGINE (VYLEPŠENÝ UNICODE + ADRESA)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -70,45 +97,31 @@ class UrbaneKPDF(FPDF):
         self.italic_ok = False
         self.pismo_name = "ArialCZ"
         
-        # Lokální cesty (GitHub / Streamlit Cloud)
-        # Linux rozlišuje arial.ttf vs ARIAL.TTF!
         variants = {
             "regular": ["arial.ttf", "ARIAL.TTF", "Arial.ttf"],
             "bold": ["arialbd.ttf", "ARIALBD.TTF", "Arialbd.ttf"],
             "italic": ["ariali.ttf", "ARIALI.TTF", "Ariali.ttf"]
         }
         
-        self.found_files = {"regular": None, "bold": None, "italic": None}
+        found = {"regular": None, "bold": None, "italic": None}
         for style, names in variants.items():
             for name in names:
                 if os.path.exists(name):
-                    self.found_files[style] = name
+                    found[style] = name
                     break
         
-        # Windows fallback (pro lokální testování)
-        if not self.found_files["regular"]:
-            win_path = "C:/Windows/Fonts/"
-            for style, names in variants.items():
-                for name in names:
-                    full = os.path.join(win_path, name)
-                    if os.path.exists(full):
-                        self.found_files[style] = full
-                        break
-
-        # Přidání písem do FPDF
-        if self.found_files["regular"] and self.found_files["bold"]:
+        if found["regular"] and found["bold"]:
             try:
-                self.add_font(self.pismo_name, "", self.found_files["regular"])
-                self.add_font(self.pismo_name, "B", self.found_files["bold"])
-                if self.found_files["italic"]:
-                    self.add_font(self.pismo_name, "I", self.found_files["italic"])
+                self.add_font(self.pismo_name, "", found["regular"])
+                self.add_font(self.pismo_name, "B", found["bold"])
+                if found["italic"]:
+                    self.add_font(self.pismo_name, "I", found["italic"])
                     self.italic_ok = True
                 self.pismo_ok = True
-            except:
-                self.pismo_ok = False
+            except: self.pismo_ok = False
+        else: self.pismo_ok = False
 
     def header(self):
-        # Pokud písmo není OK, fpdf2 vyhodí chybu místo helvetiky, což je pro nás lepší pro debugging
         self.set_font(self.pismo_name, 'B', 14)
         self.cell(0, 10, FIRMA_VLASTNI["název"], ln=True)
         self.set_font(self.pismo_name, '', 9)
@@ -118,17 +131,13 @@ class UrbaneKPDF(FPDF):
 
     def footer(self):
         self.set_y(-15)
-        # Použije kurzívu jen pokud je dostupná
         style = 'I' if self.italic_ok else ''
         self.set_font(self.pismo_name, style, 8)
         self.cell(0, 10, f"Systém W-SERVIS | Odborná certifikace: {FIRMA_VLASTNI['certifikace']} | Strana {self.page_no()}", align='C')
 
 def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
-    if not pdf.pismo_ok:
-        st.error("❌ Písmo Arial nebylo nalezeno. PDF by nemělo diakritiku. Nahrajte arial.ttf a arialbd.ttf na GitHub.")
-        return None
-    
+    if not pdf.pismo_ok: return None
     pdf.add_page()
     pdf.set_font(pdf.pismo_name, "B", 16)
     pdf.cell(0, 10, doc_title, ln=True)
@@ -137,8 +146,23 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     klient_str = f"{zakaznik['FIRMA']} (IČO: {zakaznik['ICO']})"
     pdf.cell(0, 10, f"Odběratel: {klient_str}", ln=True)
     
-    adresa_radek = f"{zakaznik.get('PSC', '')} {zakaznik.get('ADRESA3', '')}".strip()
-    pdf.cell(0, 10, f"Adresa: {adresa_radek}", ln=True)
+    # Formátování adresy (priorita ARES data)
+    ulice = zakaznik.get('ULICE', '')
+    cp = str(zakaznik.get('CP', ''))
+    co = str(zakaznik.get('CO', ''))
+    obec = zakaznik.get('ADRESA3', '')
+    psc = str(zakaznik.get('PSC', ''))
+    
+    if ulice:
+        adresa_line1 = f"{ulice} {cp}"
+        if co and co != 'None': adresa_line1 += f"/{co}"
+        pdf.cell(0, 10, f"Adresa: {adresa_line1}", ln=True)
+        pdf.cell(0, 10, f"        {psc} {obec}", ln=True)
+    else:
+        # Fallback na starý formát, pokud ARES data nejsou
+        adresa_radek = f"{psc} {obec}".strip()
+        pdf.cell(0, 10, f"Adresa: {adresa_radek}", ln=True)
+    
     pdf.ln(5)
 
     for cat_name, items in categories.items():
@@ -176,12 +200,11 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 4. STREAMLIT UI
+# 5. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v5.2", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v5.3", layout="wide", page_icon="🛡️")
 
 df_customers = load_customers()
-pdf_check = UrbaneKPDF()
 
 with st.sidebar:
     st.header("🏢 Výběr zákazníka")
@@ -189,42 +212,59 @@ with st.sidebar:
     if df_customers is not None:
         search_query = st.text_input("🔍 Hledat v databázi:", placeholder="Název, IČO nebo město...")
         filtered = search_customers(df_customers, search_query)
+        
         if not filtered.empty:
             options = filtered["FIRMA"] + " (" + filtered["ICO"].astype(str) + ")"
-            selection = st.selectbox("Vyberte partnera:", options, index=0)
+            selection = st.selectbox("Potvrďte výběr partnera:", options, index=0)
+            
             actual_idx = filtered.index[options == selection].tolist()[0]
-            st.session_state.vybrany_zakaznik = filtered.loc[actual_idx].to_dict()
+            local_data = filtered.loc[actual_idx].to_dict()
+            
+            # --- INTEGRACE ARES ---
+            if st.button("🪄 Opravit diakritiku (ARES)"):
+                with st.spinner("Zjišťuji data z ARES..."):
+                    ares_res = get_company_from_ares(local_data["ICO"])
+                    if ares_res:
+                        local_data.update(ares_res)
+                        st.session_state.vybrany_zakaznik = local_data
+                        st.success("Data byla úspěšně opravena!")
+                    else:
+                        st.error("ARES neodpovídá, používám data z DB.")
+                        st.session_state.vybrany_zakaznik = local_data
+            else:
+                if st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik['ICO'] != local_data['ICO']:
+                    st.session_state.vybrany_zakaznik = local_data
         else:
             st.warning("Nenalezeno.")
     else:
         st.error("⚠️ Databáze data/data.db nenalezena.")
 
     st.divider()
-    st.header("⚙️ Kontrola písem")
-    if pdf_check.pismo_ok:
-        st.success("✅ Písmo Arial je v pořádku")
-    else:
-        st.error("❌ Písmo Arial chybí!")
-        st.info("Nahrajte na GitHub tyto soubory:\n1. arial.ttf\n2. arialbd.ttf")
-
-    st.divider()
     st.header("📝 Detaily zakázky")
     def_klient = st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else "Ruční zadání..."
-    klient_pdf = st.text_input("Odběratel (na dokumentu):", value=def_klient)
+    klient_pdf = st.text_input("Název na dokumentu:", value=def_klient)
     source_dl = st.text_input("Číslo DL / Zakázky:", value="2026/001")
     je_svj = st.toggle("Sazba DPH 12% (SVJ)", value=True)
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Verze 5.2 | Fix diakritiky (Přelouč Test) | Mobilní asistent")
+st.caption("Verze 5.3 | ARES Integrace (Fix diakritiky) | Mobilní asistent")
 
 if st.session_state.vybrany_zakaznik:
-    with st.expander("📌 Detail vybraného zákazníka"):
+    with st.expander("📌 Detail vybraného zákazníka (ARES Opraveno)" if st.session_state.vybrany_zakaznik.get('ARES_OK') else "📌 Detail vybraného zákazníka"):
         z = st.session_state.vybrany_zakaznik
         c1, c2, c3 = st.columns(3)
         c1.write(f"**IČO:** {z['ICO']}")
-        c2.write(f"**DIČ:** {z['DIC']}")
-        c3.write(f"**Lokalita:** {z['ADRESA3']} ({z['PSC']})")
+        c2.write(f"**DIČ:** {z.get('DIC', 'Nezadáno')}")
+        
+        # Zobrazení ulice pokud je z ARES
+        if z.get('ULICE'):
+            adresa = f"{z['ULICE']} {z.get('CP', '')}"
+            if z.get('CO'): adresa += f"/{z['CO']}"
+            c3.write(f"**Adresa:** {adresa}")
+            st.write(f"**Lokalita:** {z['PSC']} {z['ADRESA3']}")
+        else:
+            c3.write(f"**Lokalita:** {z['PSC']} {z['ADRESA3']}")
 
 tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "🛠️ Odborná činnost", "📦 Prodej zboží", "🧾 Souhrn & Export"])
 
@@ -282,8 +322,6 @@ with tabs[4]:
         if st.button("📄 Vygenerovat PDF Rozpis"):
             if not st.session_state.vybrany_zakaznik:
                 st.error("Vyberte nejdříve zákazníka v Sidebaru.")
-            elif not pdf_check.pismo_ok:
-                st.error("Chybí písma! PDF by bylo nečitelné.")
             else:
                 note = "Poznámka: Kontroly jsou prováděny dle vyhlášky 246/2001 Sb. Zpracováno v systému W-SERVIS."
                 try:
@@ -294,5 +332,6 @@ with tabs[4]:
                     st.error(f"Chyba při generování: {e}")
 
 st.divider()
-st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v5.2 | RT: Ilja Urbánek")
+st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Future Firma v5.3 | RT: Ilja Urbánek")
+
 
