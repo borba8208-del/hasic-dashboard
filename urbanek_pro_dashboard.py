@@ -28,8 +28,7 @@ CATEGORY_MAP = {
     "PASKA": "PASKA",
     "PK": "PK",
     "OZO": "OZO",
-    "reklama": "reklama",
-    "Servisni_ukony": "revize"
+    "reklama": "reklama"
 }
 
 # ==========================================
@@ -50,13 +49,14 @@ CSV_FOLDER = "data/ceniky/"
 if not os.path.exists("data"): os.makedirs("data")
 if not os.path.exists(CSV_FOLDER): os.makedirs(CSV_FOLDER)
 
+# Inicializace stavů session
 if "data_zakazky" not in st.session_state:
     st.session_state.data_zakazky = {}
 if "vybrany_zakaznik" not in st.session_state:
     st.session_state.vybrany_zakaznik = None
 
 # ==========================================
-# 2. CENÍKY – LOGIKA A IMPORT (FIX DUPLICIT)
+# 2. LOGIKA CENÍKŮ (SQL + NORMALIZACE)
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -67,7 +67,7 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def import_all_ceniky() -> str:
-    """Synchronizuje CSV s DB a robustně odstraňuje duplicity."""
+    """Synchronizuje CSV s DB a odstraňuje duplicity v názvech."""
     log_messages = []
     connection = sqlite3.connect(DB_PATH)
     for ui_key, csv_name in CATEGORY_MAP.items():
@@ -80,19 +80,13 @@ def import_all_ceniky() -> str:
             df = pd.read_csv(file_path, sep=";", encoding="utf-8")
             df.columns = [col.strip().lower() for col in df.columns]
             if "nazev" in df.columns and "cena" in df.columns:
-                # FIX DUPLICIT: Odstranění položek se stejným názvem
-                count_before = len(df)
                 df = df.drop_duplicates(subset=['nazev'], keep='first')
-                count_after = len(df)
-                
                 valid_cols = [col for col in df.columns if col in ["nazev", "cena", "jednotka"]]
                 if "jednotka" not in valid_cols:
                     df["jednotka"] = "ks"
                     valid_cols.append("jednotka")
-                
                 df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
-                duplicity_info = f" (odstraněno {count_before - count_after} duplicit)" if count_before > count_after else ""
-                log_messages.append(f"✅ {table_name}: {len(df)} položek{duplicity_info}")
+                log_messages.append(f"✅ {table_name}: {len(df)} položek")
         except Exception as error:
             log_messages.append(f"❌ {csv_name}.csv: {str(error)}")
     connection.close()
@@ -145,21 +139,6 @@ def update_customer_in_db(zakaznik: dict) -> bool:
         conn.commit(); conn.close(); return True
     except: return False
 
-def repair_all_customers_with_ares() -> str:
-    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
-    rows = cur.execute("SELECT ICO FROM obchpartner").fetchall()
-    fixed = 0; skipped = 0; prog = st.progress(0)
-    for i, (ico,) in enumerate(rows):
-        ico_str = str(ico).strip()
-        if len(ico_str) < 6: skipped += 1; continue
-        ares = get_company_from_ares(ico_str)
-        if ares: ares["ICO"] = ico_str; update_customer_in_db(ares); fixed += 1
-        else: skipped += 1
-        prog.progress((i + 1) / len(rows))
-        if i % 10 == 0: time.sleep(0.05)
-    conn.close()
-    return f"Hotovo. Opraveno {fixed} firem přes ARES."
-
 # ==========================================
 # 4. PDF ENGINE (PROFESIONÁLNÍ)
 # ==========================================
@@ -190,7 +169,7 @@ class UrbaneKPDF(FPDF):
 
     def footer(self):
         self.set_y(-15); self.set_font(self.pismo_name, "", 8)
-        self.cell(0, 10, f"Odborná certifikace: {FIRMA_VLASTNI['certifikace']} | Systém HASIČ-SERVIS | Strana {self.page_no()}", align="C")
+        self.cell(0, 10, f"Systém HASIČ-SERVIS | Odborná certifikace: {FIRMA_VLASTNI['certifikace']} | Strana {self.page_no()}", align="C")
 
 def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note_text=""):
     pdf = UrbaneKPDF()
@@ -208,13 +187,14 @@ def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note
     if ul: pdf.cell(0, 6, f"        {ps} {ob}", ln=True)
     pdf.ln(4); pdf.set_line_width(0.2)
 
-    # Tabulka
+    # Hlavička tabulky
     pdf.set_font(pdf.pismo_name, "B", 8); pdf.set_fill_color(240, 240, 240)
     pdf.cell(100, 7, " Popis položky / úkonu (v souladu s vyhl. 246/2001 Sb.)", border=1, fill=True)
     pdf.cell(15, 7, "Ks", border=1, align="C", fill=True)
     pdf.cell(35, 7, "Cena/jedn.", border=1, align="R", fill=True)
     pdf.cell(40, 7, "Celkem", border=1, align="R", fill=True); pdf.ln()
 
+    # Položky (Bez kategorií - čistý list)
     pdf.set_font(pdf.pismo_name, "", 8)
     for name, qty, price in items_flat:
         pdf.cell(100, 6, f" {name}", border="LR")
@@ -235,9 +215,9 @@ def create_report_pdf(zakaznik, items_flat, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 5. STREAMLIT UI
+# 5. STREAMLIT UI (STYL V4.0 + MOZEK V6.9)
 # ==========================================
-st.set_page_config(page_title="Urbánek Master Pro v6.9", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Master Pro v7.0", layout="wide", page_icon="🛡️")
 
 def load_data():
     if not os.path.exists(DB_PATH): return None
@@ -249,14 +229,9 @@ def load_data():
 df_customers = load_data()
 
 with st.sidebar:
-    st.header("⚙️ Správa systému")
-    with st.expander("📦 Ceníky & Synchronizace"):
-        if st.button("🚀 Synchronizovat (CSV -> SQL)"):
-            st.code(import_all_ceniky()); st.rerun()
-
-    st.divider(); st.header("👤 Výběr partnera")
+    st.header("🏢 Hlavička dokladu")
     if df_customers is not None:
-        sq = st.text_input("🔍 Hledat (IČO/Název):")
+        sq = st.text_input("🔍 Vyhledat partnera (IČO/Název):")
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
@@ -271,19 +246,20 @@ with st.sidebar:
                         ares = get_company_from_ares(curr["ICO"])
                         if ares: curr.update(ares); update_customer_in_db(curr)
                 st.session_state.vybrany_zakaznik = curr.copy()
-        
-        if st.button("🛠️ Opravit CELOU DB přes ARES"):
-            st.success(repair_all_customers_with_ares()); st.rerun()
     
-    st.divider(); st.header("📝 Detaily zakázky")
-    kl_pdf = st.text_input("Odběratel na dokumentu:", value=st.session_state.vybrany_zakaznik["FIRMA"] if st.session_state.vybrany_zakaznik else "")
-    src_dl = st.text_input("Číslo dokladu:", value=f"{datetime.date.today().year}/XXX")
-    sazba = 0.12 if st.toggle("Sazba DPH 12% (SVJ / Bytové domy)", value=True) else 0.21
+    st.divider()
+    source_dl = st.text_input("Zdrojový doklad (např. DL 1064)", value=f"DL {datetime.date.today().year}/XXX")
+    je_svj = st.toggle("Uplatnit 12% DPH (SVJ / Bytové domy)", value=True)
+    sazba = 0.12 if je_svj else 0.21
+    
+    with st.expander("⚙️ Pokročilá správa"):
+        if st.button("🚀 Synchronizovat ceníky (CSV)"):
+            st.code(import_all_ceniky()); st.rerun()
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v6.9 | Master Dashboard | Fix duplicit | Profesionální rozpis prací")
+st.caption("Master Dashboard v7.0 | Boršov n. Vltavou | Systém pro kontrolu provozuschopnosti")
 
-tabs = st.tabs(["🔥 Hasicí přístroje", "📦 Náhrady & Servis", "🚰 Požární vodovody", "🖼️ Tabulky & Značení", "🛠️ Ostatní & OZO", "🧾 Export"])
+tabs = st.tabs(["🔥 Hasicí přístroje", "🚰 Požární vodovody", "📦 Náhrady & Servis", "🖼️ Značení & Materiál", "🧾 Souhrn faktury"])
 
 def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     p_val = get_price(cat_key, item_name)
@@ -294,57 +270,57 @@ def item_row(cat_key: str, item_name: str, row_id: str, step_val: float = 1.0):
     st.session_state.data_zakazky[item_name] = {"q": q, "p": p}
 
 with tabs[0]:
-    st.subheader("Kontrola provozuschopnosti HP")
+    st.subheader("1. Kontrola provozuschopnosti HP")
     item_row("HP", "Kontrola HP (shodný)", "h1")
     item_row("HP", "Kontrola HP (neshodný opravitelný)", "h2")
     item_row("HP", "Kontrola HP (neopravitelný) + odb. zneprovoznění", "h3")
     item_row("HP", "Hodinová sazba za provedení prací", "h5", step_val=0.05)
-    st.divider(); st.subheader("Nádoby a příslušenství")
     item_row("HP", "Skříň na HP 9kg KOM 9 AZ/O", "h11")
-    item_row("ND_HP", "Věšák Delta W+PG NEURUPPIN", "nd1")
 
 with tabs[1]:
-    st.subheader("Servisní úkony a náhrady")
+    st.subheader("2. Zařízení pro zásobování požární vodou")
+    st.info("Měření průtoku a tlaku certifikovaným zařízením dle vyhl. 246/2001 Sb.")
+    item_row("Voda", "Prohlídka zařízení od 11 do 20 ks výtoků", "v1")
+    item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant. systémů", "v3")
+
+with tabs[2]:
+    st.subheader("3. Servisní úkony a náhrady")
     item_row("Nahrady", "Převzetí HP vyřazeného z užívání dodavatelem", "n1")
     item_row("Nahrady", "Označení - vylepení koleček o kontrole (á 2ks)", "n2")
     item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", "n4")
     item_row("Servisni_ukony", "Tlaková zkouška nádoby HP", "s1")
 
-with tabs[2]:
-    st.subheader("Kontrola provozuschopnosti PV")
-    st.info("Prováděno měření průtoku a tlaku certifikovaným zařízením.")
-    item_row("Voda", "Prohlídka zařízení od 11 do 20 ks výtoků", "v1")
-    item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant. systémů", "v3")
-    item_row("ND_Voda", "Hydrantový box - zámek/okénko", "ndv1")
-
 with tabs[3]:
-    st.subheader("Bezpečnostní tabulky a značení")
+    st.subheader("4. Bezpečnostní tabulky a značení")
     item_row("TAB", "Tabulka - Hasicí přístroj (plast)", "t1")
     item_row("TABFOTO", "Info.plast.fotolumin. 300x150mm", "tf1")
-    item_row("reklama", "Polep firemním logem", "r1")
+    item_row("Ostatni", "Technicko organizační činnost v PO", "o1")
 
 with tabs[4]:
-    st.subheader("Ostatní položky, OZO a revize")
-    item_row("Ostatni", "Technicko organizační činnost v PO", "o1")
-    item_row("OZO", "Odborně způsobilá osoba - paušál", "ozo1")
-    item_row("HILTI", "Protipožární ucpávka Hilti", "hilti1")
-
-with tabs[5]:
-    # REKAPITULACE - Plochá tabulka bez {c} a bez kategorií
     active_items = {k: v for k, v in st.session_state.data_zakazky.items() if v["q"] > 0}
-    if not active_items: st.warning("Zadejte položky pro výpočet.")
+    if not active_items:
+        st.warning("Doklad neobsahuje žádné položky. Vyplňte množství v předchozích záložkách.")
     else:
         grand_total = sum(vals["q"] * vals["p"] for vals in active_items.values())
-        st.write(f"### Rozpis pro: {kl_pdf}")
+        st.write(f"### Náhled rekapitulace pro: {st.session_state.vybrany_zakaznik['FIRMA'] if st.session_state.vybrany_zakaznik else 'Neznámý'}")
+        
         flat_list = [[k, v["q"], v["p"]] for k, v in active_items.items()]
         st.table([{"Položka": row[0], "Ks": f"{row[1]:.2f}".rstrip("0").rstrip("."), "Celkem": f"{row[1]*row[2]:,.2f} Kč"} for row in flat_list])
         
-        st.divider(); st.metric("CELKEM BEZ DPH", f"{grand_total:,.2f} Kč")
-        if st.button("📄 VYGENEROVAT FINÁLNÍ PDF"):
-            if not st.session_state.vybrany_zakaznik: st.error("Vyberte partnera.")
-            else:
-                note = "Poznámka: Kontrola provozuschopnosti dle vyhlášky 246/2001 Sb. Zpracováno systémem HASIČ-SERVIS."
-                pdf_doc = create_report_pdf(st.session_state.vybrany_zakaznik, flat_list, grand_total, sazba, f"Rozpis prací k č. {src_dl}", note)
-                if pdf_doc: st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"Rozpis_{src_dl.replace('/','-')}.pdf")
+        st.divider()
+        c_f1, c_f2 = st.columns(2)
+        with c_f1:
+            st.metric("ZÁKLAD DANĚ", f"{grand_total:,.2f} Kč")
+            st.metric(f"DPH ({int(sazba*100)}%)", f"{grand_total * sazba:,.2f} Kč")
+            st.metric("CELKEM K ÚHRADĚ", f"{grand_total * (1+sazba):,.2f} Kč")
+        
+        with c_f2:
+            if st.button("📄 VYGENEROVAT PDF ROZPIS"):
+                if not st.session_state.vybrany_zakaznik: st.error("Vyberte partnera v bočním panelu.")
+                else:
+                    note = "Poznámka: Kontrola provozuschopnosti dle vyhlášky 246/2001 Sb. U HP typu NV (neopravitelné) doklad neslouží pro evidenci odpadů. Zpracováno systémem HASIČ-SERVIS."
+                    pdf_doc = create_report_pdf(st.session_state.vybrany_zakaznik, flat_list, grand_total, sazba, f"Rozpis prací k {source_dl}", note)
+                    if pdf_doc: st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"Rozpis_{source_dl.replace('/','-')}.pdf")
 
-st.divider(); st.caption(f"© {datetime.date.today().year} HASIČ-SERVIS URBÁNEK | Poříčská 186, Boršov n. Vltavou")
+st.divider()
+st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Expert na požární ochranu od 1994 | Odborná certifikace TÜV NORD")
