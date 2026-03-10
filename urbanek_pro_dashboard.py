@@ -42,7 +42,7 @@ if 'vybrany_zakaznik' not in st.session_state:
 # 2. POMOCNÉ FUNKCE (ARES, DB, ČÍTAČ)
 # ==========================================
 def get_company_from_ares(ico):
-    """Moderní parser pro ARES API (JSON)."""
+    """Opravený a hluboký parser pro ARES API (JSON)."""
     ico = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico}"
     try:
@@ -64,16 +64,16 @@ def get_company_from_ares(ico):
     except: return None
 
 def update_customer_in_db(z):
-    """Bezpečné uložení/aktualizace dat v SQLite s přidáním sloupců."""
+    """Trvale uloží vyčištěná data do SQLite databáze."""
     db_path = "data/data.db"
     if not os.path.exists(db_path): return False
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        # Kontrola a přidání chybějících sloupců z XML exportu
+        # Kontrola a přidání chybějících sloupců z XML
         cols = [row[1] for row in cur.execute("PRAGMA table_info(obchpartner)")]
-        for col in ["ADRESA1", "ADRESA2"]:
-            if col not in cols: cur.execute(f"ALTER TABLE obchpartner ADD COLUMN {col} TEXT")
+        for c in ["ADRESA1", "ADRESA2"]:
+            if c not in cols: cur.execute(f"ALTER TABLE obchpartner ADD COLUMN {c} TEXT")
         
         cur.execute("""
             UPDATE obchpartner 
@@ -86,9 +86,9 @@ def update_customer_in_db(z):
     except: return False
 
 def repair_all_customers_with_ares():
-    """Hromadná oprava celé databáze podle IČO."""
+    """Projít celou DB a opravit všechny firmy podle ARES podle IČO."""
     db_path = "data/data.db"
-    if not os.path.exists(db_path): return "Databáze chybí."
+    if not os.path.exists(db_path): return "Databáze nenalezena."
     
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -96,30 +96,27 @@ def repair_all_customers_with_ares():
     
     fixed = 0
     skipped = 0
-    progress = st.progress(0)
     total = len(rows)
+    prog_bar = st.progress(0)
     
     for i, (ico,) in enumerate(rows):
         ico_str = str(ico).strip()
         if len(ico_str) < 6:
-            skipped += 1
-            continue
-        
-        ares_data = get_company_from_ares(ico_str)
-        if ares_data:
-            # Přidání ICO do dat pro update
-            ares_data['ICO'] = ico_str
-            update_customer_in_db(ares_data)
+            skipped += 1; continue
+            
+        ares = get_company_from_ares(ico_str)
+        if ares:
+            ares['ICO'] = ico_str
+            update_customer_in_db(ares)
             fixed += 1
         else:
             skipped += 1
         
-        # Update progress baru a mírné zpoždění pro API (prevence blokace)
-        progress.progress((i + 1) / total)
-        if i % 5 == 0: time.sleep(0.1)
+        prog_bar.progress((i + 1) / total)
+        if i % 10 == 0: time.sleep(0.05)
         
     conn.close()
-    return f"Hotovo! Opraveno {fixed} záznamů, přeskočeno {skipped}."
+    return f"Oprava dokončena! Vyčištěno {fixed} záznamů, přeskočeno {skipped}."
 
 def load_customers():
     db_path = "data/data.db"
@@ -153,7 +150,7 @@ def increment_order_counter():
     except: pass
 
 # ==========================================
-# 3. PDF ENGINE (PROFESIONÁLNÍ)
+# 3. PDF ENGINE (PROFESIONÁLNÍ LAYOUT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self):
@@ -198,6 +195,8 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     pdf = UrbaneKPDF()
     if not pdf.pismo_ok: return None
     pdf.add_page(); pdf.set_font(pdf.pismo_name, "B", 15); pdf.cell(0, 10, doc_title, ln=True)
+    
+    # Odběratel
     pdf.set_font(pdf.pismo_name, "B", 11); pdf.cell(0, 8, f"Odběratel: {zakaznik['FIRMA']}", ln=True)
     pdf.set_font(pdf.pismo_name, "", 10); pdf.cell(0, 6, f"IČO: {zakaznik['ICO']} | DIČ: {zakaznik.get('DIC','')}", ln=True)
     
@@ -214,8 +213,10 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
         pdf.set_font(pdf.pismo_name, "B", 9); pdf.set_fill_color(235, 235, 235)
         pdf.cell(190, 7, f"  {cat_name.upper()}", border=1, ln=True, fill=True)
         pdf.set_font(pdf.pismo_name, "B", 8)
-        pdf.cell(100, 6, " Popis položky / úkonu", border=1); pdf.cell(15, 6, "Ks", border=1, align='C')
-        pdf.cell(35, 6, "Cena/jedn.", border=1, align='R'); pdf.cell(40, 6, "Celkem", border=1, align='R'); pdf.ln()
+        pdf.cell(100, 6, " Popis položky / úkonu (vyhl. 246/2001 Sb.)", border=1)
+        pdf.cell(15, 6, "Ks", border=1, align='C')
+        pdf.cell(35, 6, "Cena/jedn.", border=1, align='R')
+        pdf.cell(40, 6, "Celkem", border=1, align='R'); pdf.ln()
         pdf.set_font(pdf.pismo_name, "", 8)
         for name, qty, price in active:
             pdf.cell(100, 6, f" {name}", border="LR")
@@ -235,19 +236,19 @@ def create_report_pdf(zakaznik, categories, total_zaklad, sazba, doc_title, note
     return bytes(pdf.output())
 
 # ==========================================
-# 4. STREAMLIT UI (ABECEDNÍ A FIX SESSION)
+# 4. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="Urbánek Pro v5.9", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Urbánek Pro v6.0", layout="wide", page_icon="🛡️")
 df_customers = load_customers()
 
 with st.sidebar:
     st.header("🏢 Partner / Zákazník")
     if df_customers is not None:
-        sq = st.text_input("🔍 Hledat (Název/IČO):")
+        sq = st.text_input("🔍 Vyhledat (Název/IČO):")
         mask = (df_customers["ICO"].astype(str).str.contains(sq.lower(), na=False) | 
                 df_customers["FIRMA"].str.lower().str.contains(sq.lower(), na=False))
         
-        # ABECEDNÍ ŘAZENÍ
+        # Abecední řazení bez ohledu na velikost písmen
         filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
         
         if not filt.empty:
@@ -256,28 +257,25 @@ with st.sidebar:
             idx = filt.index[opts == sel].tolist()[0]
             curr = filt.loc[idx].to_dict()
             
-            # LOGIKA SESSION STATE (CHRÁNÍME OPRAVENÁ DATA)
-            if st.session_state.vybrany_zakaznik is None:
-                st.session_state.vybrany_zakaznik = curr.copy()
-            elif st.session_state.vybrany_zakaznik["ICO"] != curr["ICO"]:
+            # SESSION LOGIKA: Nepřepisovat opravená data z ARES
+            if st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik["ICO"] != curr["ICO"]:
                 st.session_state.vybrany_zakaznik = curr.copy()
             
-            # AUTOMATICKÁ KONTROLA ARES PŘI VÝBĚRU
+            # Automatický ARES při výběru (pokud ještě nebyla data opravena)
             if not st.session_state.vybrany_zakaznik.get("ARES_OK"):
-                with st.spinner("Ověřuji data v ARES..."):
+                with st.spinner("Dolaďuji diakritiku a adresu z ARES..."):
                     ares = get_company_from_ares(st.session_state.vybrany_zakaznik["ICO"])
                     if ares:
                         st.session_state.vybrany_zakaznik.update(ares)
                         update_customer_in_db(st.session_state.vybrany_zakaznik)
-                        st.toast(f"Firma {ares['FIRMA']} byla automaticky opravena.", icon="🪄")
+                        st.toast(f"Data firmy {ares['FIRMA']} byla opravena.", icon="🪄")
         else: st.warning("Nenalezeno.")
         
         st.divider()
-        if st.button("🛠️ Opravit celou DB přes ARES"):
-            with st.spinner("Probíhá hromadná oprava..."):
+        if st.button("🛠️ Opravit CELOU DB přes ARES"):
+            with st.spinner("Probíhá hromadná oprava celé databáze..."):
                 rep_res = repair_all_customers_with_ares()
-                st.success(rep_res)
-                st.rerun() # Refresh pro načtení nových dat
+                st.success(rep_res); st.rerun()
     else: st.error("Chybí data/data.db")
 
     st.divider(); st.header("📝 Detaily zakázky")
@@ -287,19 +285,19 @@ with st.sidebar:
     sazba = 0.12 if je_svj else 0.21
 
 st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("v5.9 | Hromadný ARES opravář | Abecední řazení | Automatická synchronizace")
+st.caption("v6.0 | Hromadný ARES Repair | Abecední řazení | Inteligentní Session Persistence")
 
-# Ukázka detailu pro kontrolu
 if st.session_state.vybrany_zakaznik:
     z = st.session_state.vybrany_zakaznik
-    with st.expander(f"📍 Detail: {z['FIRMA']}" + (" (Prověřeno ARES)" if z.get("ARES_OK") else "")):
+    with st.expander(f"📍 Detail: {z['FIRMA']}" + (" (ARES Prověřeno)" if z.get("ARES_OK") else "")):
         c1, c2 = st.columns(2)
         c1.write(f"**IČO:** {z['ICO']}")
         c1.write(f"**DIČ:** {z.get('DIC','')}")
-        c2.write(f"**Adresa:** {z.get('ULICE','')} {z.get('CP','')}")
+        adr_val = f"{z.get('ULICE','')} {z.get('CP','')}".strip()
+        c2.write(f"**Adresa:** {adr_val if adr_val else 'Zatím v DB chybí'}")
         c2.write(f"**Město:** {z['ADRESA3']} ({z['PSC']})")
 
-tabs = st.tabs(["🔥 Hasicí přístroje", "📦 Náhrady", "🚰 Vodovody", "🛠️ Ostatní", "🧾 Export"])
+tabs = st.tabs(["🔥 Hasicí přístroje", "📦 Náhrady", "🚰 Požární vodovody", "🛠️ Ostatní", "🧾 Export"])
 
 def item_row(cat, name, d_q, d_p, key, step=1.0):
     c1, c2, c3 = st.columns([3, 1, 1])
@@ -312,11 +310,13 @@ with tabs[0]:
     st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
     item_row("Kontroly HP", "Kontrola HP (shodný)", 0, DEFAULTS["hp_shodny"], "h1")
     item_row("Kontroly HP", "Kontrola HP (neshodný opravitelný)", 0, DEFAULTS["hp_opravitelny"], "h2")
-    item_row("Kontroly HP", "Kontrola HP (neopravitelný) + zneprovoznění", 0, DEFAULTS["hp_likvidace"], "h3")
+    item_row("Kontroly HP", "Kontrola HP (neopravitelný) + odb. zneprovoznění", 0, DEFAULTS["hp_likvidace"], "h3")
     item_row("Kontroly HP", "Manipulace a odvoz HP k údržbě/demontáži", 0, DEFAULTS["hp_manipulace"], "h4")
     item_row("Kontroly HP", "Hodinová sazba za provedení prací", 0, DEFAULTS["hp_hod_sazba"], "h5", step=0.05)
     item_row("Kontroly HP", "Náklady v obci do 90 tisích obyvatel", 0, DEFAULTS["hp_obec_do_90"], "h6")
+    item_row("Kontroly HP", "Náklady v obci nad 90 tisíc obyvatel", 0, DEFAULTS["hp_obec_nad_90"], "h7")
     item_row("Kontroly HP", "Zápůjčka za HP v údržbě (ČSN ISO11602-2)", 0, DEFAULTS["hp_zapujcka"], "h8")
+    item_row("Kontroly HP", "Montáž - instalace věšáku/skříně na HP", 0, DEFAULTS["hp_montaz"], "h9")
     item_row("Kontroly HP", "Vyhodnocení kontroly + vystavení dokladu (á 1ks)", 0, DEFAULTS["hp_vyhodnoceni"], "h10")
 
 with tabs[1]:
@@ -334,6 +334,7 @@ with tabs[2]:
     item_row("Vodovody", "Hod. sazba (pochůzky / manipulace s PV)", 0, DEFAULTS["pv_hodinova_sazba"], "v4", step=0.05)
     item_row("Vodovody", "Vyhodnocení kontroly zařízení PV", 0, DEFAULTS["pv_vyhodnoceni"], "v5")
     item_row("Vodovody", "Vyhotovení zprávy o kontrole PBZ", 0, DEFAULTS["pv_zprava"], "v6")
+    item_row("Vodovody", "Označení - vylepení koleček o kontrole (PV)", 0, DEFAULTS["pv_kolecko"], "v7")
 
 with tabs[3]:
     st.subheader("OSTATNÍ ČINNOST A PRODEJ")
@@ -341,10 +342,11 @@ with tabs[3]:
     st.divider()
     item_row("Prodej zboží", "Hasicí přístroj RAIMA P6 (34A, 233B, C)", 0, DEFAULTS["p6"], "p1")
     item_row("Prodej zboží", "Hasicí přístroj V9Ti (voda)", 0, DEFAULTS["v9"], "p2")
+    item_row("Prodej zboží", "Věšák Delta W+PG NEURUPPIN", 0, DEFAULTS["vesak"], "p3")
 
 with tabs[4]:
     active = {k: v for k, v in st.session_state.data_zakazky.items() if v['q'] > 0}
-    if not active: st.warning("Zadejte položky v záložkách.")
+    if not active: st.warning("Nebyly zadány žádné položky.")
     else:
         grand_total = sum(v['q'] * v['p'] for v in active.values())
         st.write(f"### Rozpis prací: {kl_pdf}")
@@ -363,4 +365,4 @@ with tabs[4]:
                 if pdf:
                     increment_order_counter(); st.download_button("⬇️ STÁHNOUT PDF", data=pdf, file_name=f"Rozpis_{src_dl.replace('/','-')}.pdf")
 
-st.divider(); st.caption(f"© {datetime.date.today().year} HASIČ-SERVIS URBÁNEK | Tradice od 1994 | RT: Tomáš Urbánek")
+st.divider(); st.caption(f"© {datetime.date.today().year} HASIČ-SERVIS URBÁNEK | Tradice od 1994 | Odborný garant: Tomáš Urbánek")
