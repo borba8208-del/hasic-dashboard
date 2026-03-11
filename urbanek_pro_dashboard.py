@@ -31,21 +31,22 @@ CATEGORY_MAP: Dict[str, str] = {
     "OZO": "OZO",
     "reklama": "reklama",
     "Servisni_ukony": "revize",
+    "Opravy": "opravy" # Přidána kategorie pro opravy HP
 }
 
 # ==========================================
 # 1. KONFIGURACE FIRMY
 # ==========================================
 FIRMA_VLASTNI: Dict[str, Any] = {
-    "název": "Ilja Urbánek - HASIČ-SERVIS",
+    "název": "Ilja Urbánek HASIČ - SERVIS",
     "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
     "ico": "60835265",
     "dic": "CZ5706281691",
+    "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
     "telefony": "608409036 - 777664768",
     "email": "schranka@hasic-servis.com",
     "web": "http://www.hasic-servis.com",
     "certifikace": "TÜV NORD Czech",
-    "založeno": 1994,
 }
 
 DB_PATH = "data/data.db"
@@ -220,163 +221,204 @@ class UrbaneKPDF(FPDF):
     def header(self) -> None:
         pismo = self.pismo_name if self.pismo_ok else "helvetica"
         
-        # Logo and Company Name
-        if os.path.exists("logo.png"):
-            self.image("logo.png", x=10, y=8, w=25)
-            self.set_xy(40, 10)
-        else:
-            self.set_xy(10, 10)
-            
-        self.set_font(pismo, "B", 14)
-        self.cell(0, 6, FIRMA_VLASTNI["název"], ln=True)
+        # Odsazení pro čistou hlavičku ala W-SERVIS
+        self.set_font(pismo, "B", 12)
+        self.cell(0, 5, FIRMA_VLASTNI["název"], ln=True)
         
-        # Address and Contacts (Exact copy from CSV snippet)
-        self.set_x(40 if os.path.exists("logo.png") else 10)
         self.set_font(pismo, "", 9)
-        self.cell(0, 5, f"{FIRMA_VLASTNI['sídlo']} | IČO: {FIRMA_VLASTNI['ico']}, DIČ: {FIRMA_VLASTNI['dic']}", ln=True)
-        self.set_x(40 if os.path.exists("logo.png") else 10)
-        self.cell(0, 5, f"Tel: {FIRMA_VLASTNI['telefony']}", ln=True)
-        self.set_x(40 if os.path.exists("logo.png") else 10)
-        self.cell(0, 5, f"Email: {FIRMA_VLASTNI['email']}, WEB: {FIRMA_VLASTNI['web']}", ln=True)
-        
-        self.line(10, 32, 200, 32)
+        self.cell(0, 4, f"{FIRMA_VLASTNI['sídlo']}", ln=True)
+        self.cell(0, 4, f"IČO: {FIRMA_VLASTNI['ico']}, DIČ: {FIRMA_VLASTNI['dic']}", ln=True)
+        self.cell(0, 4, f"{FIRMA_VLASTNI['zápis']}", ln=True)
+        self.cell(0, 4, f"Tel: , tel./fax: , mobil: {FIRMA_VLASTNI['telefony']}", ln=True)
+        self.cell(0, 4, f"Email: {FIRMA_VLASTNI['email']}, WEB: {FIRMA_VLASTNI['web']}", ln=True)
         self.ln(5)
 
     def footer(self) -> None:
-        self.set_y(-15)
-        self.set_font(self.pismo_name if self.pismo_ok else "helvetica", "", 7)
-        self.cell(0, 10, f"Zpracováno programem HASIČ-SERVIS Dashboard | Strana {self.page_no()}", align="C")
+        pass # V dodacím listu W-Servis není standardní patička s číslem stránky, je to nahoře nebo volně
 
-def create_delivery_note(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty: str) -> Optional[bytes]:
+
+def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty: str, typ_dl: str) -> Optional[bytes]:
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
     pdf.add_page()
     
-    # Title
-    pdf.set_font(pismo, "B", 14)
-    pdf.cell(0, 8, "DODACÍ LIST (práce, zboží, materiál)", ln=True, align="L")
-    pdf.ln(2)
-
-    # Meta Table (Exact copy from CSV)
-    pdf.set_font(pismo, "B", 9)
-    pdf.cell(30, 6, "Číslo DL", border=1, align="C")
-    pdf.cell(40, 6, "Číslo zakázky", border=1, align="C")
-    pdf.cell(60, 6, "Jméno reviz. technika", border=1, align="C")
-    pdf.ln()
+    # 1. Část: Hlavičková tabulka
+    pdf.set_font(pismo, "B", 11)
     
+    # Trik na zarovnání nadpisů tabulky
+    y_start = pdf.get_y()
+    pdf.set_xy(10, y_start)
+    pdf.cell(50, 5, "DODACÍ LIST", ln=False)
     pdf.set_font(pismo, "", 9)
-    pdf.cell(30, 6, dl_number, border=1, align="C")
-    pdf.cell(40, 6, zakazka, border=1, align="C")
-    pdf.cell(60, 6, technik, border=1, align="C")
-    pdf.ln(10)
-
-    # Customer Info
-    pdf.set_font(pismo, "B", 10)
-    pdf.cell(0, 5, f"Odběratel:", ln=True)
-    pdf.set_font(pismo, "", 10)
-    pdf.cell(0, 5, f"{zakaznik.get('FIRMA','')}", ln=True)
+    pdf.cell(40, 5, "(práce, zboží, materiál)", ln=False)
     
-    ul = zakaznik.get("ULICE", "") or ""
-    cp = zakaznik.get("CP", "") or ""
-    co = zakaznik.get("CO", "") or ""
-    ob = zakaznik.get("ADRESA3", "") or ""
-    ps = zakaznik.get("PSC", "") or ""
+    pdf.set_xy(100, y_start - 3)
+    pdf.cell(30, 4, "Číslo DL", border=0, align="L", ln=True)
+    pdf.set_xy(100, y_start + 1)
+    pdf.set_font(pismo, "B", 11)
+    pdf.cell(30, 5, dl_number, border=0, align="L", ln=True)
 
-    adr_line1 = f"{ul} {cp}".strip()
-    if co and co not in ["None", "", "nan", "0"]: adr_line1 += f"/{co}"
-    if adr_line1:
-        pdf.cell(0, 5, adr_line1, ln=True)
-    pdf.cell(0, 5, f"{ps} {ob}".strip(), ln=True)
-    pdf.cell(0, 5, f"IČO: {zakaznik.get('ICO','')}   DIČ: {zakaznik.get('DIC','')}", ln=True)
+    pdf.set_xy(130, y_start - 3)
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(30, 4, "Číslo zakázky", border=0, align="L", ln=True)
+    pdf.set_xy(130, y_start + 1)
+    pdf.set_font(pismo, "B", 10)
+    pdf.cell(30, 5, zakazka, border=0, align="L", ln=True)
+
+    pdf.set_xy(160, y_start - 3)
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(40, 4, "Jméno reviz. technika", border=0, align="L", ln=True)
+    pdf.set_xy(160, y_start + 1)
+    pdf.set_font(pismo, "", 10)
+    pdf.cell(40, 5, technik, border=0, align="L", ln=True)
+    
     pdf.ln(5)
 
-    # Objekty
-    if objekty:
+    # 2. Část: Hlavička tabulky položek (W-SERVIS STYL)
+    pdf.set_font(pismo, "", 9)
+    
+    y_head = pdf.get_y()
+    pdf.set_xy(100, y_head)
+    pdf.cell(20, 5, "Cena", align="C")
+    pdf.set_xy(100, y_head + 4)
+    pdf.cell(20, 5, "bez DPH", align="C")
+
+    pdf.set_xy(120, y_head)
+    pdf.cell(50, 5, "ks/výk. - jednotlivé objekty", align="L")
+    pdf.set_xy(120, y_head + 4)
+    # Zjednodušeně 1,2,3,4,5,ks/výk
+    pdf.cell(50, 5, "1  2  3  4  5    ks/výk", align="L")
+
+    pdf.set_xy(175, y_head)
+    pdf.cell(25, 5, "CELKEM", align="R")
+    pdf.set_xy(175, y_head + 4)
+    pdf.cell(25, 5, "Kč bez DPH", align="R")
+    
+    pdf.set_xy(10, y_head + 10) # Přesun pod hlavičku
+
+    # --- FUNKCE PRO VYKRESLENÍ KATEGORIE ---
+    def draw_category(cat_num_title: str, item_cats: List[str]):
+        cat_items = [[k, v["q"], v["p"]] for k, v in items_dict.items() if v["cat"] in item_cats and v["q"] > 0]
+        if not cat_items: return 0.0
+
         pdf.set_font(pismo, "B", 9)
-        pdf.cell(0, 5, "Umístění kontrolovaných zařízení v objektech:", ln=True)
+        pdf.cell(90, 6, cat_num_title, ln=True)
         pdf.set_font(pismo, "", 9)
-        pdf.multi_cell(0, 5, objekty)
-        pdf.ln(3)
 
-    # --- ITEMS TABLE ---
-    def draw_category_items(cat_title: str, item_keys: List[str]):
-        # Filter items for this category that have qty > 0
-        cat_items = [[k, v["q"], v["p"]] for k, v in items_dict.items() if v["cat"] in item_keys and v["q"] > 0]
-        
-        if not cat_items:
-            return 0.0
-
-        # Subheader for category
-        pdf.set_font(pismo, "B", 9)
-        pdf.cell(100, 6, f"{cat_title}", border=0)
-        pdf.cell(30, 6, "Cena bez DPH", border=0, align="R")
-        pdf.cell(25, 6, "Množství", border=0, align="C")
-        pdf.cell(35, 6, "CELKEM Kč", border=0, align="R")
-        pdf.ln()
-        
         cat_total = 0.0
-        pdf.set_font(pismo, "", 9)
         for name, qty, price in cat_items:
             line_total = qty * price
             cat_total += line_total
             
-            # Formating
-            name_disp = name[:55] + ("..." if len(name) > 55 else "")
-            q_disp = f"{qty:,.2f}".rstrip("0").rstrip(".") if qty % 1 != 0 else f"{int(qty)}"
-            if "1km" in name.lower(): mj = "km"
-            elif "paušál" in name.lower() or "činnost" in name.lower(): mj = "výk"
-            else: mj = "ks"
-
-            pdf.cell(100, 5, f"  {name_disp}", border=0)
-            pdf.cell(30, 5, f"{price:,.2f}", border=0, align="R")
-            pdf.cell(25, 5, f"{q_disp} {mj}", border=0, align="C")
-            pdf.cell(35, 5, f"{line_total:,.2f}", border=0, align="R")
-            pdf.ln()
+            # Název
+            name_disp = " " + name[:50] + ("..." if len(name) > 50 else "")
+            pdf.cell(90, 5, name_disp)
             
-        pdf.set_font(pismo, "B", 9)
-        pdf.cell(155, 6, f"CELKEM {cat_title}:", align="R")
-        pdf.cell(35, 6, f"{cat_total:,.2f}", align="R")
-        pdf.ln(8)
-        
+            # Cena
+            pdf.cell(20, 5, f"{price:,.1f}".replace('.', ','), align="R")
+            
+            # Sloupec "ks/výk. - jednotlivé objekty" - simulace W-SERVIS výpisu
+            # Do posledního sloupce (celkové ks) dáme množství
+            q_disp = f"{qty:,.2f}".rstrip("0").rstrip(".") if qty % 1 != 0 else f"{int(qty)}"
+            
+            # Vyplnění "teček/čárek" pro objekty 1,2,3,4,5 a pak celkový počet
+            # V základu to hodíme jako celkový počet nakonec
+            pdf.cell(10, 5, "") # Mezera pro "1 2 3 4 5"
+            
+            if "1km" in name.lower() or "hod" in name.lower():
+                # U kilometrů a hodin to W-Servis cpal trochu divně, zarovnáme k pravé straně objektů
+                pdf.cell(40, 5, f"{q_disp}", align="R") 
+            else:
+                 pdf.cell(40, 5, f"{q_disp}", align="R")
+
+            # Celkem Kč
+            pdf.cell(30, 5, f"{line_total:,.2f}".replace('.', ','), align="R", ln=True)
         return cat_total
 
-    # Draw categories exactly as in W-SERVIS
-    pdf.set_line_width(0.2)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(2)
-
+    # Vykreslení kategorií
     total_sum = 0.0
-    total_sum += draw_category_items("1. KONTROLY HASICÍCH PŘÍSTROJŮ", ["HP"])
-    total_sum += draw_category_items("2. NÁHRADY A SERVIS", ["Nahrady", "Servisni_ukony"])
-    total_sum += draw_category_items("3. KONTROLY ZAŘÍZENÍ ZÁSOB. POŽ. VODOU", ["Voda"])
-    total_sum += draw_category_items("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND", ["ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA"])
-    total_sum += draw_category_items("5. OSTATNÍ A OZO", ["Ostatni", "OZO"])
+    
+    # 1. HP
+    if typ_dl == "Standard":
+        total_sum += draw_category("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ", ["HP"])
+    else: # Pokud si uživatel vybere, že dělá DL pro opravny (Prior)
+        total_sum += draw_category("1. KONTROLY OPRAVENÝCH HP", ["HP"])
+        
+    # 2. Voda (Někdy to mají jako 1. Kontroly PV, spojíme to do logické řady)
+    total_sum += draw_category("1. KONTROLY ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU", ["Voda"])
+    
+    # Náhrady / Vyhodnocení
+    total_sum += draw_category("2. NÁHRADY A VYHODNOCENÍ KONTROLY", ["Nahrady", "Servisni_ukony"])
+    
+    # Opravy HP
+    total_sum += draw_category("3. OPRAVY HASICÍCH PŘÍSTROJŮ", ["Opravy"])
 
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(4)
+    # Prodej
+    total_sum += draw_category("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND", ["ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Zboží"])
 
-    # Grand Total
-    pdf.set_font(pismo, "B", 12)
-    pdf.cell(155, 8, "C E L K E M   B E Z   D P H :", align="R")
-    pdf.cell(35, 8, f"{total_sum:,.2f} Kč", align="R")
-    pdf.ln(15)
+    # Ostatní
+    total_sum += draw_category("5. OSTATNÍ A OZO", ["Ostatni", "OZO"])
 
-    # Signatures
-    pdf.set_font(pismo, "B", 9)
-    pdf.cell(70, 5, "Odběratel:", border=0)
-    pdf.cell(50, 5, "Datum:", border=0)
-    pdf.cell(70, 5, "Potvrzení reviz.technika:", border=0, ln=True)
-    pdf.ln(15) # Space for signatures
-    pdf.line(10, pdf.get_y(), 60, pdf.get_y())
-    pdf.line(80, pdf.get_y(), 120, pdf.get_y())
-    pdf.line(130, pdf.get_y(), 190, pdf.get_y())
+    # --- SOUČTOVÁ ŘÁDKA ---
+    pdf.ln(2)
+    pdf.set_font(pismo, "B", 10)
+    pdf.cell(140, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
+    pdf.cell(50, 6, f"{total_sum:,.2f}".replace('.', ','), align="R", ln=True)
     pdf.ln(10)
 
-    # Exact W-SERVIS Notes
+    # --- ODBĚRATEL & PODPISY ---
+    pdf.set_font(pismo, "B", 9)
+    pdf.cell(20, 5, "Odběratel:")
+    
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(70, 5, zakaznik.get("ICO", ""))
+    
+    # Umístění uprostřed
+    pdf.set_font(pismo, "B", 9)
+    pdf.cell(60, 5, "Umístění kontrolovaných HP/PV v objektech:")
+    
+    pdf.cell(40, 5, "Potvrzení reviz.technika:", ln=True)
+
+    # Odběratel - Název a adresa
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(90, 5, zakaznik.get('FIRMA',''))
+    
+    # Vypsání objektů z pole
+    objekty_list = objekty.split('\n') if objekty else []
+    if len(objekty_list) > 0:
+        pdf.cell(60, 5, f"{objekty_list[0]}:")
+    else:
+        pdf.cell(60, 5, "")
+        
+    pdf.cell(40, 5, "", ln=True) # Místo pro podpis RT
+    
+    # Adresa odběratele
+    pdf.cell(90, 5, f"{ul} {cp}".strip())
+    if len(objekty_list) > 1:
+        pdf.cell(60, 5, f"{objekty_list[1]}:")
+    else:
+        pdf.cell(60, 5, "")
+    pdf.cell(40, 5, "Datum:", ln=True)
+
+    pdf.cell(90, 5, f"{ps} {ob}".strip())
+    if len(objekty_list) > 2:
+        pdf.cell(60, 5, f"{objekty_list[2]}:")
+    else:
+        pdf.cell(60, 5, "")
+    pdf.cell(40, 5, f"{datetime.date.today().strftime('%d.%m.%Y')}", ln=True)
+
+    pdf.ln(20)
+
+    # --- POZNÁMKA A PATIČKA DLE W-SERVIS ---
     pdf.set_font(pismo, "", 7)
-    note1 = "Poznámka: HP - SHODNÝ - splňuje veškeré podmínky stanovené odbornými pokyny výrobce, HP - NESHODNÝ - nesplňuje podmínky stanovené odbornými pokyny "
-    note2 = "výrobce - je a) opravitelný nebo b) neopravitelný - nutné vyřazení z provozu a odborná ekologická likvidace."
+    note1 = "Poznámka:  HP - SHODNÝ  - splňuje veškeré podmínky stanovené odbornými pokyny výrobce,  HP - NESHODNÝ  - nesplňuje podmínky stanovené odbornými pokyny "
+    note2 = "výrobce - je a) opravitelný nebo b) neopravitelný - nutné vyřazení z provozu a odborná ekologická likvidace"
     pdf.multi_cell(0, 4, note1 + "\n" + note2)
+    
+    # Ta slavná věta z W-Servis
+    wservis_stamp = f"Zpracováno programem \"Evidence kontrol a oprav HP\" od W-SERVIS PC Ing.Vladimír Vašek, Hluboká nad Vltavou, verze: 6.789999 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    pdf.cell(0, 4, wservis_stamp, ln=True)
+
 
     try: 
         return bytes(pdf.output())
@@ -386,7 +428,7 @@ def create_delivery_note(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], d
 # ==========================================
 # 5. STREAMLIT UI 
 # ==========================================
-st.set_page_config(page_title="Urbánek Master Pro v10.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Clone DL v11.0", layout="wide", page_icon="🛡️")
 
 def load_all_customers() -> Optional[pd.DataFrame]:
     if not os.path.exists(DB_PATH): return None
@@ -399,11 +441,12 @@ def load_all_customers() -> Optional[pd.DataFrame]:
 df_customers = load_all_customers()
 
 with st.sidebar:
-    st.header("🏢 Hlavička Dodacího listu")
+    st.header("🏢 Hlavička DL")
     
     # Údaje přímo do tabulky v PDF
-    dl_number = st.text_input("Číslo DL:", value="7738")
-    zakazka = st.text_input("Číslo zakázky:", value="1/11")
+    typ_dl = st.radio("Typ Dodacího listu:", ["Standard", "Opravy (Prior)"])
+    dl_number = st.text_input("Číslo DL:", value="1698")
+    zakazka = st.text_input("Číslo zakázky:", value="1/13")
     technik = st.text_input("Jméno reviz. technika:", value="v.z. Tomáš Urbánek")
     
     st.divider()
@@ -433,17 +476,17 @@ with st.sidebar:
         else: st.warning("Nenalezeno.")
 
     st.divider()
-    objekty_text = st.text_area("Umístění (Objekty):", value="Hotel hlavní budova č.1\nHotel budova č.2", height=100)
+    objekty_text = st.text_area("Umístění kontrolovaných HP v objektech (každý na nový řádek):", value="Hotel hlavní budova č.1\nHotel budova č.2\nHotel budova č.3", height=100)
 
     with st.expander("⚙️ Pokročilá správa (Ceníky)"):
         if st.button("🚀 Synchronizovat ceníky (CSV)"):
             log = import_all_ceniky()
             st.code(log); st.rerun()
 
-st.title("🛡️ HASIČ-SERVIS URBÁNEK")
-st.caption("Generátor Dodacích listů v10.1 | Věrná kopie W-SERVIS výstupu")
+st.title("🛡️ Dodací Listy (W-SERVIS Clone)")
+st.caption("Generátor v11.0 | Věrná kopie původního systému | Ceny z databáze")
 
-tabs = st.tabs(["🔥 HP", "🚰 PV", "📦 Náhrady", "🖼️ Značení", "🛠️ ND & Ostatní", "🧾 Vytvořit DL"])
+tabs = st.tabs(["🔥 HP Kontroly", "🛠️ HP Opravy", "🚰 PV Kontroly", "📦 Náhrady & Značení", "🛒 Prodej ND", "🧾 Vytvořit DL"])
 
 def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, step_val: float = 1.0) -> None:
     p_val = get_price(cat_key, item_name)
@@ -457,7 +500,7 @@ def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, s
     st.session_state.data_zakazky[item_name] = {"q": float(q), "p": float(p), "cat": cat_key}
 
 with tabs[0]:
-    st.subheader("1. KONTROLY HASICÍCH PŘÍSTROJŮ")
+    st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
     item_row("HP", "Kontrola HP (shodný)", 29.40, "h1")
     item_row("HP", "Kontrola HP (neshodný - opravitelný)", 19.70, "h2")
     item_row("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", 23.50, "h3")
@@ -465,25 +508,36 @@ with tabs[0]:
     item_row("HP", "Hodinová sazba za provedení prací - mimo uvedených", 450.00, "h5", step_val=0.5)
 
 with tabs[1]:
-    st.subheader("3. KONTROLY ZAŘÍZENÍ ZÁSOB. POŽ. VODOU")
-    item_row("Voda", "Prohlídka zařízení od 11 do 20 ks výtoků", 193.00, "v1")
-    item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant. systémů", 95.00, "v3")
+    st.subheader("3. OPRAVY HASICÍCH PŘÍSTROJŮ")
+    st.info("Vyplňujte při tvorbě DL pro opravy (např. Prior)")
+    item_row("Opravy", "P6 Če (21A/)", 385.00, "opr1")
+    item_row("Opravy", "CO2-5F/ETS", 418.00, "opr2")
+    item_row("Opravy", "S1,5 Kod", 280.00, "opr3")
+    item_row("Opravy", "S2 KT 02.06/EN3", 314.00, "opr4")
+    item_row("Opravy", "S5 Kte", 418.00, "opr5")
+    item_row("Opravy", "S6KT", 385.00, "opr6")
 
 with tabs[2]:
-    st.subheader("2. NÁHRADY A SERVIS")
-    item_row("Nahrady", "Převzetí HP vyřazeného z užívání dodavatelem", 88.00, "n1")
-    item_row("Nahrady", "Označení - vylepení koleček o kontrole (á 2ks / HP)", 3.50, "n2")
-    item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", 13.80, "n4")
+    st.subheader("1. KONTROLY ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU")
+    item_row("Voda", "Prohlídka zařízení od 6 do 10 ks výtoků", 159.00, "v1")
+    item_row("Voda", "Kontrola zařízení bez měření průtoku od 6 do 10 ks výtoků", 246.00, "v2")
+    item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 95.00, "v3")
+    item_row("Voda", "Měření průtoku á 1 ks vnější odběrní místo - podzemní hydrant", 179.00, "v4")
 
 with tabs[3]:
-    st.subheader("4. BEZPEČNOSTNÍ TABULKY A ZNAČENÍ")
-    item_row("TAB", "Tabulka - Hasicí přístroj (plast)", 25.00, "t1")
-    item_row("TABFOTO", "Info.plast.fotolumin. 300x150mm", 65.00, "tf1")
+    st.subheader("2. NÁHRADY A VYHODNOCENÍ")
+    item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení od 6 do 10 ks výtoků", 117.00, "s1")
+    item_row("Servisni_ukony", "Vyhotovení zprávy o kontrole zařízení pro zásob.pož.vodou", 170.00, "s2")
+    item_row("Nahrady", "Převzetí HP vyřazeného z užívání dodavatelem", 88.00, "n1")
+    item_row("Nahrady", "Označení - vylepení koleček o kontrole (á 2ks / HP)", 3.50, "n2")
+    item_row("Nahrady", "Označení - vylepení štítku o kontrole (á 1ks / HP)", 8.00, "n3")
+    item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", 6.00, "n4")
 
 with tabs[4]:
-    st.subheader("4. PRODEJ ZBOŽÍ A ND / 5. OSTATNÍ")
-    item_row("ND_HP", "Věšák Delta W+PG NEURUPPIN", 35.00, "nd1")
-    item_row("Ostatni", "Technicko organizační činnost v PO", 4488.00, "o1")
+    st.subheader("4. PRODEJ ZBOŽÍ A ND")
+    item_row("Zboží", "Has.přístr. RAIMA P6 (34A,233B,C)", 1090.00, "zb1")
+    item_row("Zboží", "Hasicí přístroj V9LE Tepostop", 1015.12, "zb2")
+    item_row("ND_HP", "Skříň na HP 9kg KOM 9 AZ/O", 820.16, "nd1")
 
 with tabs[5]:
     active_items = {k: v for k, v in st.session_state.data_zakazky.items() if v["q"] > 0}
@@ -493,20 +547,21 @@ with tabs[5]:
         grand_total = sum(vals["q"] * vals["p"] for vals in active_items.values())
         firma = st.session_state.vybrany_zakaznik.get("FIRMA", "Neznámý") if st.session_state.vybrany_zakaznik else "Neznámý"
         
-        st.write(f"### Přehled pro: {firma}")
+        st.write(f"### Náhled pro: {firma}")
         st.metric("CELKEM K FAKTURACI (BEZ DPH)", f"{grand_total:,.2f} Kč")
 
-        if st.button("📄 VYGENEROVAT DODACÍ LIST (PDF)"):
+        if st.button("📄 VYGENEROVAT DODACÍ LIST DLE W-SERVIS (PDF)"):
             if not st.session_state.vybrany_zakaznik:
                 st.error("Nejprve vyberte zákazníka v postranním panelu.")
             else:
-                pdf_doc = create_delivery_note(
+                pdf_doc = create_wservis_dl(
                     st.session_state.vybrany_zakaznik, 
                     st.session_state.data_zakazky, 
                     dl_number, 
                     zakazka, 
                     technik, 
-                    objekty_text
+                    objekty_text,
+                    typ_dl
                 )
                 if pdf_doc:
                     st.download_button("⬇️ STÁHNOUT DODACÍ LIST", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
