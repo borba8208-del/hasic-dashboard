@@ -224,7 +224,7 @@ def repair_all_customers_with_ares() -> str:
     return f"Vyčištěno {fixed} záznamů přes ARES, přeskočeno {skipped}."
 
 # ==========================================
-# 4. PDF ENGINE (ČISTÝ DODACÍ LIST BEZ FAKTURY)
+# 4. PDF ENGINE (ČISTÝ W-SERVIS DODACÍ LIST)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
@@ -277,21 +277,21 @@ class UrbaneKPDF(FPDF):
         self.ln(5)
 
     def footer(self) -> None:
-        pass # Žádná standardní patička s číslem stránky
+        pass 
 
 def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty: str, typ_dl: str) -> Optional[bytes]:
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
     pdf.add_page()
     
-    # DODACÍ LIST Hlavička (přesně dle TXT vzoru)
+    # DODACÍ LIST Hlavička
     y_dl = pdf.get_y()
     pdf.set_font(pismo, "B", 12)
     pdf.cell(50, 5, "DODACÍ LIST")
     pdf.set_font(pismo, "", 9)
     pdf.cell(50, 5, "(práce, zboží, materiál)")
 
-    # Malá tabulka pro DL a Zakázku
+    # Tabulka DL
     pdf.set_xy(110, y_dl)
     pdf.cell(25, 4, "Číslo DL")
     pdf.cell(25, 4, "Číslo zakázky")
@@ -331,7 +331,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(90, 5, name_disp)
             pdf.cell(25, 5, f"{price:,.1f}".replace('.', ','), align="R")
             
-            # Prostor pro "1 2 3 4 5" a počet
+            # W-Servis formátování počtů
             pdf.cell(25, 5, "") 
             q_disp = f"{qty:,.2f}".rstrip("0").rstrip(".") if qty % 1 != 0 else f"{int(qty)}"
             pdf.cell(20, 5, q_disp, align="R")
@@ -343,8 +343,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
     total_sum = 0.0
     
-    # Skupiny přesně podle W-SERVIS výstupů (vypsány pouze pokud obsahují položky)
-    if typ_dl == "Standard":
+    # Skupiny přesně podle W-SERVIS výstupů
+    if typ_dl == "Standard (Kontroly)":
         total_sum += draw_category("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ", ["HP"])
     else: 
         total_sum += draw_category("1. KONTROLY OPRAVENÝCH HP", ["HP"])
@@ -433,7 +433,7 @@ df_customers = load_all_customers()
 with st.sidebar:
     st.header("🏢 Hlavička Dodacího listu")
     
-    typ_dl = st.radio("Hlavička první sekce:", ["Standard (Kontroly)", "Opravy (Prior)"])
+    typ_dl = st.radio("Typ dodacího listu (Hlavička 1. sekce):", ["Standard (Kontroly)", "Opravy (Prior)"])
     dl_number = st.text_input("Číslo DL:", value="1698")
     zakazka = st.text_input("Číslo zakázky:", value="1/13")
     technik = st.text_input("Jméno reviz. technika:", value="v.z. Tomáš Urbánek")
@@ -472,8 +472,8 @@ with st.sidebar:
             log = import_all_ceniky()
             st.code(log); st.rerun()
 
-st.title("🛡️ Tvorba Dodacího Listu")
-st.caption("Verze 14.0 | Samostatné bloky pro HP a PV | Generuje výhradně čistý DL (bez faktury)")
+st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS Look)")
+st.caption("Verze 14.0 | Generuje VÝHRADNĚ čistý Dodací list (žádná faktura, žádné DPH).")
 
 tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady & Poplatky", "🛒 5. Zboží & Značení", "🧾 6. Vytvořit DL"])
 
@@ -488,7 +488,7 @@ def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, s
     
     st.session_state.data_zakazky[item_name] = {"q": float(q), "p": float(p), "cat": cat_key}
 
-# --- TAB 1: HP KONTROLY (Úkony + Vyhodnocení + Štítky) ---
+# --- TAB 1: HP KONTROLY ---
 with tabs[0]:
     st.subheader("Samotná kontrola a manipulace")
     item_row("HP", "Kontrola HP  (shodný)", 29.40, "h1")
@@ -504,7 +504,7 @@ with tabs[0]:
     item_row("Nahrady", "Označení - vylepení koleček o kontrole  (á 2ks / HP)", 3.50, "n2")
     item_row("Nahrady", "Označení - vylepení štítku o kontrole  (á 1ks / HP)", 8.00, "n3")
 
-# --- TAB 2: PV KONTROLY (Úkony + Vyhodnocení) ---
+# --- TAB 2: PV KONTROLY ---
 with tabs[1]:
     st.subheader("Kontrola a měření hydrantů")
     item_row("Voda", "Prohlídka zařízení do 5 ks výtoků", 123.00, "v1")
@@ -523,7 +523,7 @@ with tabs[1]:
 # --- TAB 3: HP OPRAVY ---
 with tabs[2]:
     st.subheader("Dílenské opravy přístrojů")
-    st.info("Položky využívané na DL pro opravy (vyžaduje napojení na databázi nebo použije fallback).")
+    st.info("Položky využívané na DL pro opravy (např. Prior)")
     item_row("Opravy", "CO2-5F/ETS", 418.00, "opr1")
     item_row("Opravy", "P6 Če (21A/)", 385.00, "opr2")
     item_row("Opravy", "S1,5 Kod", 280.00, "opr3")
