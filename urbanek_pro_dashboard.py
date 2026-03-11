@@ -411,5 +411,3 @@ with st.sidebar:
             st.warning("Nenalezeno.")
 
         st.divider()
-        if st.button("🛠️ Opravit celou DB přes"):
-    pass
