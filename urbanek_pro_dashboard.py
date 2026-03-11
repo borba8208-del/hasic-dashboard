@@ -412,4 +412,4 @@ with st.sidebar:
 
         st.divider()
         if st.button("🛠️ Opravit celou DB přes"):
-
+    pass
