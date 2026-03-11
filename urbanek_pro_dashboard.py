@@ -104,7 +104,7 @@ def import_all_ceniky() -> str:
                 continue
 
             # PŘÍSNÉ ČIŠTĚNÍ DAT
-            df = df.dropna(subset=["nazev", "cena"]) # Zahození prázdných řádků
+            df = df.dropna(subset=["nazev", "cena"])
             df["nazev"] = df["nazev"].astype(str).str.strip()
             df = df[df["nazev"] != "nan"]
             df = df[df["nazev"] != ""]
@@ -271,6 +271,9 @@ class UrbaneKPDF(FPDF):
         self.line(10, 35, 200, 35)
         self.ln(5)
 
+    def footer(self) -> None:
+        pass
+
 def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty: str, typ_dl: str) -> Optional[bytes]:
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
@@ -326,7 +329,13 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             
             pdf.cell(30, 5, f"{line_total:,.2f}".replace('.', ','), align="R", ln=True)
             
-        pdf.ln(2)
+        pdf.ln(1)
+        pdf.set_font(pismo, "B", 9)
+        # Extrahuje text za číslováním (např. z "1. KONTROLY HP" vybere "KONTROLY HP")
+        nazev_celkem = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
+        pdf.cell(160, 5, f"C E L K E M   {nazev_celkem}", align="R")
+        pdf.cell(30, 5, f"{cat_total:,.2f}".replace('.', ','), align="R", ln=True)
+        pdf.ln(3)
         return cat_total
 
     total_sum = 0.0
@@ -341,11 +350,11 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     total_sum += draw_category("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND", ["ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Zboží"])
     total_sum += draw_category("5. OSTATNÍ A OZO", ["Ostatni", "OZO"])
 
-    pdf.ln(4)
+    pdf.ln(2)
     pdf.set_font(pismo, "B", 10)
-    pdf.cell(155, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
-    pdf.cell(35, 6, f"{total_sum:,.2f} Kč".replace('.', ','), align="R", ln=True)
-    pdf.ln(12)
+    pdf.cell(160, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
+    pdf.cell(30, 6, f"{total_sum:,.2f}".replace('.', ','), align="R", ln=True)
+    pdf.ln(10)
 
     ul = zakaznik.get("ULICE", "") or ""
     cp = zakaznik.get("CP", "") or ""
@@ -398,7 +407,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - HYBRIDNÍ OVLÁDACÍ PANEL
 # ==========================================
-st.set_page_config(page_title="W-SERVIS DL Master v16.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS DL Master v17.0", layout="wide", page_icon="🛡️")
 
 def load_all_customers() -> Optional[pd.DataFrame]:
     if not os.path.exists(DB_PATH): return None
@@ -446,7 +455,7 @@ with st.sidebar:
         else: st.warning("Nenalezeno.")
 
     st.divider()
-    objekty_text = st.text_area("Umístění v objektech:", value="Hotel hlavní budova č.1\nHotel budova č.2", height=80)
+    objekty_text = st.text_area("Umístění v objektech (každý na nový řádek):", value="Hotel hlavní budova č.1\nHotel budova č.2", height=80)
 
     with st.expander("⚙️ Správa Ceníků (Přísná kontrola)"):
         if st.button("🚀 Synchronizovat s DB"):
@@ -456,9 +465,9 @@ with st.sidebar:
 
 # --- MAIN AREA ---
 st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-st.caption("Verze 16.0 | Hybridní model: Pevné formuláře pro služby + Roletka pro zboží")
+st.caption("Verze 17.0 | Pevné formuláře pro služby + Roletka pro zboží | Čistý DL bez DPH")
 
-tabs = st.tabs(["🔥 HP Kontroly", "🚰 PV Kontroly", "🛠️ HP Opravy", "🚗 Náhrady & Poplatky", "🛒 Zboží (Dynamické)", "🧾 Přehled & Tisk"])
+tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady & Vyhodnocení", "🛒 5. Zboží & Materiál", "🧾 6. Přehled & Tisk"])
 
 def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, step_val: float = 1.0) -> None:
     """Pro pevné formuláře (služby a náhrady)"""
@@ -474,33 +483,28 @@ def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, s
 
 # --- TAB 1: HP KONTROLY ---
 with tabs[0]:
-    st.subheader("Samotná kontrola a manipulace")
-    item_row("HP", "Kontrola HP  (shodný)", 29.40, "h1")
-    item_row("HP", "Kontrola HP  (neshodný - opravitelný)", 19.70, "h2")
+    st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
+    item_row("HP", "Kontrola HP (shodný)", 29.40, "h1")
+    item_row("HP", "Kontrola HP (neshodný - opravitelný)", 19.70, "h2")
     item_row("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", 23.50, "h3")
     item_row("HP", "Manipulace a odvoz HP ze servisu (opravy)", 24.00, "h4")
     item_row("HP", "Manipulace a odvoz HP k násl. údržbě-TZ,opravě-plnění,demontáži", 24.00, "h5")
     item_row("HP", "Hod.sazba (pochůzky po objektu/ manipulace s HP/PV + další=dohod", 450.00, "h6", step_val=0.1)
-    st.divider()
-    item_row("HP", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)", 5.80, "h7")
 
 # --- TAB 2: PV KONTROLY ---
 with tabs[1]:
-    st.subheader("Kontrola a měření hydrantů")
+    st.subheader("1. KONTROLY ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU")
     item_row("Voda", "Prohlídka zařízení do 5 ks výtoků", 123.00, "v1")
     item_row("Voda", "Kontrola zařízení bez měření průtoku do 5 ks výtoků", 141.00, "v2")
     item_row("Voda", "Prohlídka zařízení od 6 do 10 ks výtoků", 159.00, "v3")
     item_row("Voda", "Kontrola zařízení bez měření průtoku od 6 do 10 ks výtoků", 246.00, "v4")
     item_row("Voda", "Měření průtoku á 1 ks vnitřní hydrant.systémů typu D/C", 95.00, "v5")
     item_row("Voda", "Měření průtoku á 1 ks vnější odběrní místo - podzemní hydrant", 179.00, "v6")
-    st.divider()
-    item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení do 5 ks výtoků", 85.00, "s1")
-    item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení od 6 do 10 ks výtoků", 117.00, "s2")
-    item_row("Servisni_ukony", "Vyhotovení zprávy o kontrole zařízení pro zásob.pož.vodou", 170.00, "s3")
 
 # --- TAB 3: HP OPRAVY ---
 with tabs[2]:
-    st.subheader("Dílenské opravy přístrojů")
+    st.subheader("3. OPRAVY HASICÍCH PŘÍSTROJŮ")
+    st.info("Položky využívané na DL pro opravy (např. zakázky typu OD Prior).")
     item_row("Opravy", "CO2-5F/ETS", 418.00, "opr1")
     item_row("Opravy", "P6 Če (21A/)", 385.00, "opr2")
     item_row("Opravy", "S1,5 Kod", 280.00, "opr3")
@@ -508,21 +512,32 @@ with tabs[2]:
     item_row("Opravy", "S5 Kte", 418.00, "opr5")
     item_row("Opravy", "S6KT", 385.00, "opr6")
 
-# --- TAB 4: NÁHRADY ---
+# --- TAB 4: NÁHRADY A VYHODNOCENÍ ---
 with tabs[3]:
-    st.subheader("Doprava a poplatky")
+    st.subheader("2. VYHODNOCENÍ KONTROLY + NÁHRADY")
+    
+    st.markdown("**(Administrativa a Vyhodnocení)**")
+    item_row("Servisni_ukony", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)", 5.80, "s_hp1")
+    item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení do 5 ks výtoků", 85.00, "s1")
+    item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení od 6 do 10 ks výtoků", 117.00, "s2")
+    item_row("Servisni_ukony", "Vyhotovení zprávy o kontrole zařízení pro zásob.pož.vodou", 170.00, "s3")
+    
+    st.markdown("**(Doprava a Cestovné)**")
     item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo", 6.00, "n4")
     item_row("Nahrady", "Náhrada za 1km - osobní servisní vozidlo + přívěs", 16.00, "n5")
     item_row("Nahrady", "Náhrada za 1km - nákladní servisní vozidlo do 3,5 tun", 15.90, "n6")
+    item_row("Nahrady", "Náhrada za 1km - nákladní servisní vozidlo do 3,5 tun + přívěs", 18.00, "n7")
+    
+    st.markdown("**(Další náhrady a poplatky)**")
+    item_row("Nahrady", "Převzetí HP vyřazeného z užívání dodavatelem", 88.00, "n1")
+    item_row("Nahrady", "Označení - vylepení koleček o kontrole (á 2ks / HP)", 3.50, "n2")
+    item_row("Nahrady", "Označení - vylepení štítku o kontrole (á 1ks / HP)", 8.00, "n3")
     item_row("Nahrady", "Náhrada za použití komunikačního kanálu pro zjištění - ověření údajů o zákazníkovi v rejstřících + pořízení výpisu", 48.00, "n8")
-    st.divider()
-    item_row("Nahrady", "Označení - vylepení koleček o kontrole  (á 2ks / HP)", 3.50, "n2")
-    item_row("Nahrady", "Označení - vylepení štítku o kontrole  (á 1ks / HP)", 8.00, "n3")
 
 # --- TAB 5: ZBOŽÍ A ND (DYNAMICKÁ ROLETKA) ---
 with tabs[4]:
-    st.subheader("Přidat Zboží, Materiál a Náhradní díly z ceníku")
-    zbozi_kategorie = ["Zboží", "ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA"]
+    st.subheader("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND (Dynamická nabídka)")
+    zbozi_kategorie = ["Zboží", "ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Ostatni", "OZO"]
     db_items = get_items_from_db(zbozi_kategorie)
     
     if not db_items:
@@ -583,10 +598,10 @@ with tabs[5]:
         
         c_f1, c_f2 = st.columns(2)
         with c_f1:
-            st.metric("CELKEM ZA DODACÍ LIST (BEZ DPH)", f"{grand_total:,.2f} Kč")
+            st.metric("CELKEM ZA DODACÍ LIST (Kč)", f"{grand_total:,.2f} Kč")
 
         with c_f2:
-            if st.button("📄 VYGENEROVAT ČISTÝ DODACÍ LIST (PDF)"):
+            if st.button("📄 VYGENEROVAT DODACÍ LIST (PDF)"):
                 if not st.session_state.vybrany_zakaznik:
                     st.error("Nejprve vyberte zákazníka v postranním panelu.")
                 else:
@@ -594,7 +609,7 @@ with tabs[5]:
                         st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, objekty_text, typ_dl
                     )
                     if pdf_doc:
-                        st.download_button("⬇️ STÁHNOUT DODACÍ LIST", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
+                        st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
                     else:
                         st.error("Chyba při generování PDF.")
 
