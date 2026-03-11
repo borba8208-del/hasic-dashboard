@@ -1,4 +1,3 @@
-
 import os
 import re
 import time
@@ -557,7 +556,3 @@ with tabs[5]:
 
 st.divider()
 st.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']} | Expert na požární ochranu od 1994 | Odborná certifikace TÜV NORD")
-
-
-
-
