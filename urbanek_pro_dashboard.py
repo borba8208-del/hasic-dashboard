@@ -111,7 +111,7 @@ if "loaded_ico" not in st.session_state: st.session_state.loaded_ico = None
 if "evidence_df" not in st.session_state: st.session_state.evidence_df = pd.DataFrame()
 
 # ==========================================
-# 2. INTELIGENTNÍ IMPORT DATABÁZÍ
+# 2. INTELIGENTNÍ IMPORT DATABÁZÍ VČETNĚ UNIVERZÁLNÍHO XML
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -122,13 +122,55 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
+    """
+    Univerzální W-SERVIS datový skener:
+    Hledá prioritně Excel, následně se pokusí přečíst a zploštit XML, jako poslední záchrana je CSV.
+    """
     excel_path = base_path + ".xlsx"
+    xml_path = base_path + ".xml"
     csv_path = base_path + ".csv"
     
+    # 1. Zkusí načíst Excel (.xlsx)
     if os.path.exists(excel_path):
         try: return pd.read_excel(excel_path)
         except Exception: pass
+
+    # 2. Zkusí načíst XML (.xml) - Nový univerzální XML dekodér pro W-SERVIS tabulky
+    if os.path.exists(xml_path) and os.path.getsize(xml_path) > 0:
+        try:
+            import xml.etree.ElementTree as ET
+            xml_data = None
+            # Nalezení správného českého kódování
+            for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
+                try:
+                    with open(xml_path, 'r', encoding=enc) as f:
+                        xml_data = f.read()
+                    break
+                except UnicodeDecodeError: continue
             
+            if xml_data:
+                # Očistíme XML hlavičku, která může způsobovat pády parseru
+                xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
+                root = ET.fromstring(xml_data)
+                
+                rows = []
+                # Vyhledá všechny záznamy (typicky tag <polozka>)
+                for pol in root.findall('.//polozka'):
+                    row_data = {}
+                    for child in pol:
+                        if len(child) > 0: # Zploštění vnořených tagů (např. <ADRESA><FIRMA>...)
+                            for subchild in child:
+                                row_data[subchild.tag.lower()] = subchild.text if subchild.text else ""
+                        else:
+                            row_data[child.tag.lower()] = child.text if child.text else ""
+                    rows.append(row_data)
+                
+                if rows:
+                    return pd.DataFrame(rows)
+        except Exception: 
+            pass # Pokud selže XML, propadne to na záchranné CSV
+            
+    # 3. Zkusí načíst staré CSV (.csv)
     if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0: 
         for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
             try:
@@ -137,6 +179,7 @@ def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
                     df = pd.read_csv(csv_path, sep=",", encoding=enc, on_bad_lines='skip')
                 return df
             except Exception: continue
+            
     return None
 
 def clean_ico(ico_val: Any) -> str:
@@ -148,6 +191,7 @@ def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
+        # Import všech menších ceníků a kategorií
         for ui_key, name in CATEGORY_MAP.items():
             base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
@@ -182,6 +226,7 @@ def import_all_ceniky() -> str:
             except Exception as e:
                 log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
+        # Import centrálního souboru zboží / expimp (nyní s plnou XML podporou!)
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data(expimp_base)
         if df_exp is not None:
@@ -214,6 +259,7 @@ def import_all_ceniky() -> str:
                     log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
                 except Exception as e: pass
 
+        # Import zákazníků (již řešen přes univerzální XML zplošťovač v `safe_read_data`)
         xml_path = os.path.join(CSV_FOLDER, "obchpartner.xml")
         if os.path.exists(xml_path):
             try:
@@ -425,7 +471,6 @@ class UrbaneKPDF(FPDF):
         self.cell(0, 4, f"{FIRMA_VLASTNI['zápis']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         
-        # OPRAVA HLAVIČKY: Odstraněno "Tel: , tel./fax: ,"
         self.cell(0, 4, f"Mobil: {FIRMA_VLASTNI['telefony']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.cell(0, 4, f"Email: {FIRMA_VLASTNI['email']} | WEB: {FIRMA_VLASTNI['web']}", ln=True)
@@ -468,7 +513,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.set_font(pismo, "", 9)
     pdf.cell(50, 5, "(práce, zboží, materiál)")
 
-    # OPRAVA HLAVIČKY (TERMINOLOGIE A DVOJTEČKY)
     pdf.set_xy(110, y_dl)
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
@@ -557,7 +601,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.ln(8)
 
     # ----------------------------------------------
-    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY (CORPORATE FINAL)
+    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY
     # ----------------------------------------------
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
@@ -580,37 +624,29 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     ps = get_safe_str(zakaznik, "PSC")
     adr_line2 = f"{ps} {ob}".strip()
 
-    # Dvousloupcová tabulka pro Odběratele a Objekty
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
     pdf.cell(95, 6, " Odběratel:", border=1, fill=True)
     pdf.cell(95, 6, " Umístění kontrolovaných HP/PV v objektech:", border=1, fill=True, ln=True)
 
     pdf.set_font(pismo, "", 9)
-    
-    # Řádek 1
     pdf.cell(95, 5, f"  Firma:  {firma[:45]}", border="L R")
     pdf.cell(95, 5, f"  1:  {objekty_map.get(1, '')[:45]}", border="L R", ln=True)
     
-    # Řádek 2
     pdf.cell(95, 5, f"  Ulice:  {adr_line1[:45]}", border="L R")
     pdf.cell(95, 5, f"  2:  {objekty_map.get(2, '')[:45]}", border="L R", ln=True)
     
-    # Řádek 3
     pdf.cell(95, 5, f"  Město:  {adr_line2[:45]}", border="L R")
     pdf.cell(95, 5, f"  3:  {objekty_map.get(3, '')[:45]}", border="L R", ln=True)
     
-    # Řádek 4
     pdf.cell(95, 5, f"  IČO:    {ico}", border="L R")
     pdf.cell(95, 5, f"  4:  {objekty_map.get(4, '')[:45]}", border="L R", ln=True)
     
-    # Řádek 5 (Dokončení spodní hrany)
     pdf.cell(95, 6, f"  DIČ:    {dic}", border="L B R")
     pdf.cell(95, 6, f"  5:  {objekty_map.get(5, '')[:45]}", border="L B R", ln=True)
             
     pdf.ln(4)
 
-    # SAMOSTATNÁ TABULKA PRO PODPISY (Odděleno pod hlavní tabulkou)
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
     pdf.cell(190, 6, " Záznam o kontrole a předání:", border=1, fill=True, ln=True)
@@ -623,7 +659,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(95, 5, "  Za zhotovitele (Předal):", ln=False)
     pdf.cell(95, 5, "  Za odběratele (Převzal):", ln=True)
 
-    pdf.set_font(pismo, "", 9)
     pdf.cell(95, 5, "  Kontrolní technik: Tomáš Urbánek", ln=False)
     pdf.cell(95, 5, "  Jméno hůlkovým písmem:", ln=True)
 
@@ -634,7 +669,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(95, 5, "  ...........................................................", ln=False)
     pdf.cell(95, 5, "  ...........................................................", ln=True)
 
-    pdf.set_font(pismo, "I", 7)
+    # OPRAVA: Odstraněna kurzíva ("I"), nahrazena standardním fontem (""), aby PDF tiskárna nepadala
+    pdf.set_font(pismo, "", 7)
     pdf.cell(95, 3, "   Podpisy a razítka zhotovitele", ln=False)
     pdf.cell(95, 3, "   Podpis a razítko odběratele", ln=True)
     pdf.set_y(y_sig + 26)
@@ -651,7 +687,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
     pdf.ln(4)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 34.0 Corporate Final / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 35.0 Universal XML / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
