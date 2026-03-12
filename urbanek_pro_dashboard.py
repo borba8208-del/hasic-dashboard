@@ -417,31 +417,29 @@ def load_czech_font():
             pass
 
 # ==========================================
-# 4. PDF ENGINE (UNICODE SHIELD & GEOMETRIE)
+# 4. PDF ENGINE (STABLE FONTS & GEOMETRIE)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
         super().__init__()
         self.pismo_ok = False
-        self.pismo_name = "DejaVu" # Přejmenováno pro jednoznačnost Unicode fontu
+        self.pismo_name = "DejaVu" 
         
         load_czech_font()
         
-        # PŘÍSNÁ UNICODE INICIALIZACE - Brání pádu při kreslení hlavičky
+        # STABILNÍ INICIALIZACE FONTŮ (bez problematického uni=True)
         if os.path.exists("dejavu.ttf") and os.path.exists("dejavu-bold.ttf"):
             try:
-                self.add_font(self.pismo_name, "", "dejavu.ttf", uni=True)
-                self.add_font(self.pismo_name, "B", "dejavu-bold.ttf", uni=True)
+                self.add_font(self.pismo_name, "", "dejavu.ttf")
+                self.add_font(self.pismo_name, "B", "dejavu-bold.ttf")
                 self.pismo_ok = True
-                self.set_font(self.pismo_name, "", 9) # Bezpečný základ
             except Exception:
                 self.pismo_ok = False
 
     def header(self) -> None:
-        # Pokud není český font, selháváme na výchozí
+        # Použije český font (DejaVu) pokud se podařilo načíst, jinak fallback
         pismo = self.pismo_name if self.pismo_ok else "helvetica"
         
-        # Pojistka: Nastavíme font ještě před psaním čehokoliv
         self.set_font(pismo, "B", 12)
         
         if os.path.exists("logo.png"):
@@ -473,7 +471,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
     pdf.add_page()
-    pdf.set_font(pismo, "", 9) # Bezpečný restart po add_page
+    # Explicitní nastavení fontu ihned po přidání stránky
+    pdf.set_font(pismo, "", 9) 
     
     def fmt_price(num):
         if num == 0: return "0,00"
