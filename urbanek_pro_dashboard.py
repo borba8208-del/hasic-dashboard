@@ -368,6 +368,21 @@ class UrbaneKPDF(FPDF):
         reg_font = next((f for f in font_paths if os.path.exists(f)), None)
         bold_font = next((f for f in bold_paths if os.path.exists(f)), None)
         
+        # Záchrana pro Cloud (Linux) - automatické stažení fontu s českou diakritikou
+        if not reg_font or not bold_font:
+            roboto_reg = "Roboto-Regular.ttf"
+            roboto_bold = "Roboto-Bold.ttf"
+            if not os.path.exists(roboto_reg):
+                try:
+                    import requests
+                    open(roboto_reg, "wb").write(requests.get("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf").content)
+                    open(roboto_bold, "wb").write(requests.get("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf").content)
+                except Exception:
+                    pass
+            if os.path.exists(roboto_reg) and os.path.exists(roboto_bold):
+                reg_font = roboto_reg
+                bold_font = roboto_bold
+
         if reg_font and bold_font:
             try:
                 self.add_font(self.pismo_name, "", reg_font)
@@ -619,25 +634,36 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         st.divider()
         
         if df_customers is not None:
-            sq = st.text_input("🔍 Vyhledat zákazníka:")
-            sq_lower = sq.lower().strip()
-            if sq_lower:
-                mask = (df_customers["ICO"].astype(str).str.contains(sq_lower, na=False) | 
-                        df_customers["FIRMA"].str.lower().str.contains(sq_lower, na=False))
-            else: mask = pd.Series([True] * len(df_customers))
-            
-            filt = df_customers[mask].sort_values(by="FIRMA", key=lambda s: s.str.lower())
+            # Sjednotíme vyhledávání do jedné chytré roletky (Streamlit v ní nativně umí hledat)
+            filt = df_customers.copy()
+            filt["FIRMA"] = filt["FIRMA"].fillna("Neznámý název")
+            filt = filt.sort_values(by="FIRMA", key=lambda s: s.astype(str).str.lower())
 
             if not filt.empty:
-                # Ošetření, aby v roletce nebylo prázdné jméno
                 def format_cust(row):
                     f = str(row.get('FIRMA', '')).strip()
                     i = str(row.get('ICO', '')).strip()
-                    if not f or f.lower() == "nan" or f == i: f = f"Neznámý název (IČO: {i})"
-                    return f"{f} ({i})"
-                    
+                    if not f or f.lower() == "nan" or f == i: f = f"Neznámý název"
+                    return f"{f}  |  IČO: {i}"
+
                 opts = filt.apply(format_cust, axis=1).tolist()
-                sel = st.selectbox("Zvolte odběratele:", opts)
+
+                # Zachování výběru po refreshi stránky
+                default_idx = None
+                if st.session_state.vybrany_zakaznik:
+                    curr_ico = str(st.session_state.vybrany_zakaznik.get("ICO", "")).strip()
+                    for idx_opt, opt in enumerate(opts):
+                        if f"IČO: {curr_ico}" in opt:
+                            default_idx = idx_opt
+                            break
+
+                sel = st.selectbox(
+                    "🔍 Vyhledat odběratele (pište název nebo IČO):",
+                    options=opts,
+                    index=default_idx if default_idx is not None else 0,
+                    help="Klikněte do pole a začněte psát. Systém vyhledává v názvech firem i v IČO."
+                )
+                
                 idx = opts.index(sel)
                 curr = filt.iloc[idx].to_dict()
 
