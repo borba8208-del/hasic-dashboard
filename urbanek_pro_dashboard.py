@@ -467,42 +467,44 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.set_font(pismo, "", 9)
     pdf.cell(50, 5, "(práce, zboží, materiál)")
 
-    # TABULKA PRO ČÍSLO ZAKÁZKY
+    # TABULKA PRO ČÍSLO ZAKÁZKY A TECHNIKA (PROFESIONÁLNÍ MŘÍŽKA)
     pdf.set_xy(110, y_dl)
     pdf.set_font(pismo, "B", 9)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(25, 5, "Poř.číslo" if "Standard" in typ_dl else "Číslo DL", border=1, align="C", fill=True)
-    pdf.cell(25, 5, "Zakázka", border=1, align="C", fill=True)
-    pdf.cell(40, 5, "Revizní technik", border=1, align="C", fill=True, ln=True)
+    pdf.set_fill_color(235, 235, 235)
+    str_dl_typ = "Poř. číslo:" if "Standard" in typ_dl else "Číslo DL:"
+    pdf.cell(25, 5, str_dl_typ, border=1, align="C", fill=True)
+    pdf.cell(25, 5, "Zakázka:", border=1, align="C", fill=True)
+    pdf.cell(40, 5, "Revizní technik:", border=1, align="C", fill=True, ln=True)
     
     pdf.set_xy(110, y_dl + 5)
-    pdf.set_font(pismo, "", 9)
-    pdf.cell(25, 5, dl_number, border=1, align="C")
-    pdf.cell(25, 5, zakazka, border=1, align="C")
-    pdf.cell(40, 5, technik, border=1, align="C", ln=True)
+    pdf.set_font(pismo, "B", 9)
+    pdf.cell(25, 6, dl_number, border=1, align="C")
+    pdf.cell(25, 6, zakazka, border=1, align="C")
+    pdf.cell(40, 6, technik, border=1, align="C", ln=True)
     pdf.ln(8)
 
-    # UNIVERZÁLNÍ KRESLIČ TABULEK
+    # UNIVERZÁLNÍ KRESLIČ TABULEK (VYLEPŠENÝ)
     def draw_category(cat_num_title: str, item_cats: List[str]):
         cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v.get("q", 0) > 0]
         if not cat_items: return 0.0
 
-        # Hlavička sekce
+        # Hlavní nadpis sekce (Tmavší pruh)
         pdf.set_font(pismo, "B", 9)
-        pdf.set_fill_color(230, 230, 230)
+        pdf.set_fill_color(210, 220, 230)
         pdf.cell(190, 6, f" {cat_num_title}", border=1, fill=True, ln=True)
         
-        # Hlavička sloupců
+        # Hlavička sloupců (Světlý pruh)
+        pdf.set_fill_color(240, 240, 240)
         pdf.set_font(pismo, "B", 8)
-        pdf.cell(90, 5, "Název položky", border=1, align="C")
-        pdf.cell(20, 5, "Cena", border=1, align="C")
-        pdf.cell(8, 5, "1", border=1, align="C")
-        pdf.cell(8, 5, "2", border=1, align="C")
-        pdf.cell(8, 5, "3", border=1, align="C")
-        pdf.cell(8, 5, "4", border=1, align="C")
-        pdf.cell(8, 5, "5", border=1, align="C")
-        pdf.cell(15, 5, "ks/výk", border=1, align="C")
-        pdf.cell(25, 5, "CELKEM (Kč)", border=1, align="C", ln=True)
+        pdf.cell(85, 5, " Název položky", border=1, fill=True)
+        pdf.cell(17, 5, "Cena/ks", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "1", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "2", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "3", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "4", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "5", border=1, align="C", fill=True)
+        pdf.cell(15, 5, "ks/výk", border=1, align="C", fill=True)
+        pdf.cell(33, 5, "CELKEM (Kč)", border=1, align="C", fill=True, ln=True)
 
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
@@ -518,23 +520,25 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             line_total = qty * price
             cat_total += line_total
             
-            name_disp = " " + name[:60] + ("..." if len(name) > 60 else "")
+            name_disp = " " + name[:58] + ("..." if len(name) > 58 else "")
             
-            # Podbarvení řádků pomocí 'B' (Bottom border)
-            pdf.cell(90, 5, name_disp, border="B")
-            pdf.cell(20, 5, fmt_price(price), border="B", align="R")
-            pdf.cell(8, 5, fmt_q(q1), border="B", align="C")
-            pdf.cell(8, 5, fmt_q(q2), border="B", align="C")
-            pdf.cell(8, 5, fmt_q(q3), border="B", align="C")
-            pdf.cell(8, 5, fmt_q(q4), border="B", align="C")
-            pdf.cell(8, 5, fmt_q(q5), border="B", align="C")
-            pdf.cell(15, 5, fmt_q(qty), border="B", align="C")
-            pdf.cell(25, 5, fmt_tot(line_total), border="B", align="R", ln=True)
+            # Podbarvení řádků pomocí kompletního orámování
+            pdf.cell(85, 6, name_disp, border=1)
+            pdf.cell(17, 6, fmt_price(price), border=1, align="R")
+            pdf.cell(8, 6, fmt_q(q1), border=1, align="C")
+            pdf.cell(8, 6, fmt_q(q2), border=1, align="C")
+            pdf.cell(8, 6, fmt_q(q3), border=1, align="C")
+            pdf.cell(8, 6, fmt_q(q4), border=1, align="C")
+            pdf.cell(8, 6, fmt_q(q5), border=1, align="C")
+            pdf.cell(15, 6, fmt_q(qty), border=1, align="C")
+            pdf.cell(33, 6, fmt_tot(line_total), border=1, align="R", ln=True)
             
+        # Mezisoučet
         pdf.set_font(pismo, "B", 9)
+        pdf.set_fill_color(245, 245, 245)
         nazev_celkem = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
-        pdf.cell(165, 6, f"C E L K E M   {nazev_celkem}", border=1, align="R")
-        pdf.cell(25, 6, fmt_tot(cat_total), border=1, align="R", ln=True)
+        pdf.cell(157, 6, f"CELKEM za {nazev_celkem}: ", border=1, align="R", fill=True)
+        pdf.cell(33, 6, fmt_tot(cat_total), border=1, align="R", fill=True, ln=True)
         pdf.ln(4)
         return cat_total
 
@@ -550,13 +554,15 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     total_sum += draw_category("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND", ["ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Zboží"])
     total_sum += draw_category("5. OSTATNÍ A OZO", ["Ostatni", "OZO"])
 
+    # FINÁLNÍ SOUČET S VÝRAZNÝM POZADÍM
     pdf.set_font(pismo, "B", 10)
-    pdf.cell(165, 8, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", border=1, align="R")
-    pdf.cell(25, 8, f"{fmt_tot(total_sum)} Kč", border=1, align="R", ln=True)
-    pdf.ln(10)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(157, 8, "CELKEM K ÚHRADĚ BEZ DPH: ", border=1, align="R", fill=True)
+    pdf.cell(33, 8, f"{fmt_tot(total_sum)} Kč", border=1, align="R", fill=True, ln=True)
+    pdf.ln(8)
 
     # ----------------------------------------------
-    # PATIČKA - ODBĚRATEL A MAPA OBJEKTŮ
+    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY (STRUKTUROVANÁ TABULKA)
     # ----------------------------------------------
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
@@ -579,61 +585,63 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     ps = get_safe_str(zakaznik, "PSC")
     adr_line2 = f"{ps} {ob}".strip()
 
-    # Vykreslení velkého rámečku pro patičku
-    y_foot = pdf.get_y()
-    pdf.rect(10, y_foot, 190, 35)
-    pdf.set_xy(12, y_foot + 2)
-
+    # 3-sloupcová tabulková patička s přesnými šířkami (75 + 70 + 45 = 190 mm)
     pdf.set_font(pismo, "B", 9)
-    pdf.cell(70, 5, "Odběratel:", border=0, ln=False)
-    pdf.cell(70, 5, "Umístění kontrolovaných HP/PV v objektech:", border=0, ln=False)
-    pdf.cell(46, 5, "Potvrzení reviz.technika:", border=0, ln=True)
+    pdf.set_fill_color(235, 235, 235)
+    pdf.cell(75, 6, " Odběratel:", border=1, fill=True)
+    pdf.cell(70, 6, " Umístění kontrolovaných HP/PV v objektech:", border=1, fill=True)
+    pdf.cell(45, 6, " Potvrzení reviz. technika:", border=1, fill=True, ln=True)
 
     pdf.set_font(pismo, "", 9)
     
-    o1_str = f"1: {objekty_map.get(1, '')}" if objekty_map.get(1) else ""
-    pdf.cell(70, 5, firma[:38], ln=False)
-    pdf.cell(70, 5, o1_str[:38], ln=False)
-    pdf.cell(46, 5, "", ln=True)
+    # Řádek 1
+    pdf.cell(75, 6, f"  Firma:  {firma[:40]}", border="L R")
+    pdf.cell(70, 6, f"  1:  {objekty_map.get(1, '')[:40]}", border="L R")
+    pdf.cell(45, 6, "  Předal:", border="L R", ln=True)
     
-    o2_str = f"2: {objekty_map.get(2, '')}" if objekty_map.get(2) else ""
-    pdf.cell(70, 5, adr_line1[:38], ln=False)
-    pdf.cell(70, 5, o2_str[:38], ln=False)
-    pdf.cell(46, 5, "Datum:", ln=True)
+    # Řádek 2
+    pdf.cell(75, 6, f"  Ulice:   {adr_line1[:40]}", border="L R")
+    pdf.cell(70, 6, f"  2:  {objekty_map.get(2, '')[:40]}", border="L R")
+    pdf.cell(45, 6, "", border="L R", ln=True)
     
-    o3_str = f"3: {objekty_map.get(3, '')}" if objekty_map.get(3) else ""
-    pdf.cell(70, 5, adr_line2[:38], ln=False)
-    pdf.cell(70, 5, o3_str[:38], ln=False)
-    pdf.cell(46, 5, f"{datetime.date.today().strftime('%d.%m.%Y')}", ln=True)
+    # Řádek 3
+    pdf.cell(75, 6, f"  Město: {adr_line2[:40]}", border="L R")
+    pdf.cell(70, 6, f"  3:  {objekty_map.get(3, '')[:40]}", border="L R")
+    pdf.cell(45, 6, "  ........................................", border="L R", align="C", ln=True)
     
-    o4_str = f"4: {objekty_map.get(4, '')}" if objekty_map.get(4) else ""
-    pdf.cell(70, 5, f"IČO: {ico}   DIČ: {dic}"[:38], ln=False)
-    pdf.cell(70, 5, o4_str[:38], ln=False)
-    pdf.cell(46, 5, "..........................................", ln=True)
+    # Řádek 4
+    pdf.cell(75, 6, f"  IČO:    {ico}", border="L R")
+    pdf.cell(70, 6, f"  4:  {objekty_map.get(4, '')[:40]}", border="L R")
+    pdf.cell(45, 6, "  Převzal:", border="L R", ln=True)
     
-    o5_str = f"5: {objekty_map.get(5, '')}" if objekty_map.get(5) else ""
-    pdf.cell(70, 5, "", ln=False)
-    pdf.cell(70, 5, o5_str[:38], ln=False)
-    pdf.cell(46, 5, "", ln=True)
+    # Řádek 5 (Konečný řádek s dolní hranou)
+    pdf.cell(75, 6, f"  DIČ:    {dic}", border="L B R")
+    pdf.cell(70, 6, f"  5:  {objekty_map.get(5, '')[:40]}", border="L B R")
+    pdf.cell(45, 6, "  ........................................", border="L B R", align="C", ln=True)
             
-    pdf.set_xy(10, y_foot + 40)
+    pdf.ln(5)
 
+    # UPOZORNĚNÍ PRO ZÁKAZNÍKA
     pdf.set_font(pismo, "", 7)
-    note1 = "Poznámka:  HP - SHODNÝ  - splňuje veškeré podmínky stanovené odbornými pokyny výrobce,  HP - NESHODNÝ  - nesplňuje podmínky stanovené odbornými pokyny "
+    note1 = "Poznámka: HP - SHODNÝ - splňuje veškeré podmínky stanovené odbornými pokyny výrobce,  HP - NESHODNÝ - nesplňuje podmínky stanovené odbornými pokyny"
     note2 = "výrobce - je a) opravitelný nebo b) neopravitelný - nutné vyřazení z provozu a odborná ekologická likvidace (neslouží jako doklad pro státní evidenci odpadů)."
     pdf.multi_cell(0, 3, note1 + "\n" + note2)
     
+    # BOX PRO VYŘAZENÉ HP (Pokročilé zobrazení)
     if vyrazene_kody:
         pdf.ln(2)
-        pdf.set_font(pismo, "B", 7)
-        pdf.cell(0, 3, "Zaznamenané důvody vyřazení neopravitelných HP:", ln=True)
-        pdf.set_font(pismo, "", 7)
-        for kod in vyrazene_kody:
+        pdf.set_font(pismo, "B", 8)
+        pdf.set_fill_color(245, 230, 230) # Jemný načervenalý tón pro důležitost
+        pdf.cell(190, 5, " Zaznamenané důvody vyřazení neopravitelných HP:", border="L T R", fill=True, ln=True)
+        pdf.set_font(pismo, "", 8)
+        for i, kod in enumerate(vyrazene_kody):
             text_duvodu = DUVODY_VYRAZENI.get(kod, "")
-            pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
+            # Poslední řádek rámečku se uzavře i dole
+            b_style = "L B R" if i == len(vyrazene_kody) - 1 else "L R"
+            pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
-    pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 30.0 Table Master / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    pdf.ln(4)
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 32.0 Corporate Grid / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
