@@ -1003,13 +1003,14 @@ elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
             if "clean_ico" in view_df.columns: view_df = view_df.drop(columns=["clean_ico"])
             view_df = view_df.fillna("")
             
-            # BEZPEČNOSTNÍ POJISTKA: Vybere jen ty sloupce, které v DB skutečně existují
+            # BEZPEČNOSTNÍ POJISTKA: Zabrání chybě KeyError (Vybere jen ty sloupce, které máte v DB)
             dostupne_sloupce = view_df.columns.tolist()
-            zobrazit_sloupce = []
-            for hledany_sloupec in ["ICO", "FIRMA", "ULICE", "ADRESA1", "ADRESA3", "PSC", "DIC"]:
-                if hledany_sloupec in dostupne_sloupce:
-                    zobrazit_sloupce.append(hledany_sloupec)
-                    
+            zobrazit_sloupce = [col for col in ["ICO", "FIRMA", "ULICE", "ADRESA1", "ADRESA2", "ADRESA3", "PSC", "DIC"] if col in dostupne_sloupce]
+            
+            # Pokud by náhodou nenašel žádný ze základních, zobrazí všechny dostupné
+            if not zobrazit_sloupce:
+                zobrazit_sloupce = dostupne_sloupce
+                
             st.dataframe(view_df[zobrazit_sloupce], use_container_width=True, height=500)
         else:
             st.info("Zatím nejsou nahráni žádní zákazníci.")
