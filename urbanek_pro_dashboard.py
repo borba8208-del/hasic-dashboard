@@ -115,28 +115,39 @@ def normalize_category_to_table(cat_key: str) -> str:
     normalized = re.sub(r"[^a-z0-9_]", "", normalized)
     return f"cenik_{normalized}"
 
-def safe_read_csv(path: str) -> Optional[pd.DataFrame]:
-    if not os.path.exists(path) or os.path.getsize(path) == 0: 
-        return None
-    for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
+def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
+    """Univerzální čtečka: Preferuje bezproblémový Excel (.xlsx), záložně bere CSV."""
+    excel_path = base_path + ".xlsx"
+    csv_path = base_path + ".csv"
+    
+    # 1. Nejprve zkusí načíst Excel (Zaručeně správná čeština)
+    if os.path.exists(excel_path):
         try:
-            df = pd.read_csv(path, sep=";", encoding=enc, on_bad_lines='skip')
-            if len(df.columns) == 1 and "," in df.columns[0]:
-                df = pd.read_csv(path, sep=",", encoding=enc, on_bad_lines='skip')
-            return df
+            return pd.read_excel(excel_path)
         except Exception:
-            continue
+            pass
+            
+    # 2. Záložní plán pro staré CSV
+    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0: 
+        for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
+            try:
+                df = pd.read_csv(csv_path, sep=";", encoding=enc, on_bad_lines='skip')
+                if len(df.columns) == 1 and "," in df.columns[0]:
+                    df = pd.read_csv(csv_path, sep=",", encoding=enc, on_bad_lines='skip')
+                return df
+            except Exception:
+                continue
     return None
 
 def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
-        for ui_key, csv_name in CATEGORY_MAP.items():
-            file_path = os.path.join(CSV_FOLDER, f"{csv_name}.csv")
+        for ui_key, name in CATEGORY_MAP.items():
+            base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
 
-            df = safe_read_csv(file_path)
+            df = safe_read_data(base_path)
             if df is None: continue
 
             df.columns = [str(col).strip().lower() for col in df.columns]
@@ -159,16 +170,15 @@ def import_all_ceniky() -> str:
             try:
                 df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
                 dup_info = f" (Očištěno o {count_before - count_after} duplicit)" if count_before > count_after else ""
-                log_messages.append(f"✅ Načteno: {csv_name} ({len(df)} položek){dup_info}")
+                log_messages.append(f"✅ Načteno: {name} ({len(df)} položek){dup_info}")
             except Exception as e:
-                log_messages.append(f"❌ {csv_name}: Chyba DB – {e}")
+                log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
-        expimp_path = os.path.join(CSV_FOLDER, "expimp.csv")
-        if os.path.exists(expimp_path):
-            df_exp = safe_read_csv(expimp_path)
-            if df_exp is not None:
-                df_exp.columns = [str(c).strip().lower().replace('"', '') for c in df_exp.columns]
-                name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
+        expimp_base = os.path.join(CSV_FOLDER, "expimp")
+        df_exp = safe_read_data(expimp_base)
+        if df_exp is not None:
+            df_exp.columns = [str(c).strip().lower().replace('"', '') for c in df_exp.columns]
+            name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
                 
                 price_col = None
                 if 'cena1' in df_exp.columns: price_col = 'cena1'
@@ -196,9 +206,9 @@ def import_all_ceniky() -> str:
                     
                     try:
                         df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
-                        log_messages.append(f"📦 ÚSPĚCH: Velký export expimp.csv úspěšně spárován! Do katalogu přidáno {len(df_clean)} položek.")
+                        log_messages.append(f"📦 ÚSPĚCH: Velký export expimp úspěšně spárován! Do katalogu přidáno {len(df_clean)} položek.")
                     except Exception as e:
-                        log_messages.append(f"❌ expimp.csv: Chyba při zápisu – {e}")
+                        log_messages.append(f"❌ expimp: Chyba při zápisu – {e}")
 
     finally:
         connection.close()
@@ -252,8 +262,8 @@ def validate_ico(ico: Any) -> bool:
     return digits[7] == c
 
 def load_local_customers() -> Optional[pd.DataFrame]:
-    path = os.path.join("data", "ceniky", "zakaznici.csv")
-    df = safe_read_csv(path)
+    base_path = os.path.join("data", "ceniky", "zakaznici")
+    df = safe_read_data(base_path)
     if df is not None and not df.empty:
         # Sjednocení názvů sloupců - odolnost proti "IČO", "Ičo", "ICO"
         def clean_col(c):
@@ -358,19 +368,20 @@ class UrbaneKPDF(FPDF):
         reg_font = next((f for f in font_paths if os.path.exists(f)), None)
         bold_font = next((f for f in bold_paths if os.path.exists(f)), None)
         
+        # 100% Spolehlivá záchrana pro Cloud - font DejaVuSans (garantované ř, č, ž)
         if not reg_font or not bold_font:
-            roboto_reg = "Roboto-Regular.ttf"
-            roboto_bold = "Roboto-Bold.ttf"
-            if not os.path.exists(roboto_reg):
+            dejavu_reg = "DejaVuSans.ttf"
+            dejavu_bold = "DejaVuSans-Bold.ttf"
+            if not os.path.exists(dejavu_reg):
                 try:
-                    import requests
-                    open(roboto_reg, "wb").write(requests.get("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf").content)
-                    open(roboto_bold, "wb").write(requests.get("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf").content)
+                    import urllib.request
+                    urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans.ttf", dejavu_reg)
+                    urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans-Bold.ttf", dejavu_bold)
                 except Exception:
                     pass
-            if os.path.exists(roboto_reg) and os.path.exists(roboto_bold):
-                reg_font = roboto_reg
-                bold_font = roboto_bold
+            if os.path.exists(dejavu_reg) and os.path.exists(dejavu_bold):
+                reg_font = dejavu_reg
+                bold_font = dejavu_bold
 
         if reg_font and bold_font:
             try:
