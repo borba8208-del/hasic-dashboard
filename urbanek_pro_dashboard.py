@@ -129,7 +129,6 @@ def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
-        # 1. Import mapovaných kategorií z Excelu / CSV
         for ui_key, name in CATEGORY_MAP.items():
             base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
@@ -164,7 +163,6 @@ def import_all_ceniky() -> str:
             except Exception as e:
                 log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
-        # 2. Import velkého expimp souboru
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data(expimp_base)
         if df_exp is not None:
@@ -197,16 +195,13 @@ def import_all_ceniky() -> str:
                     log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
                 except Exception as e: pass
 
-        # 3. NATIVNÍ XML PARSER PRO obchpartner.xml (Oprava češtiny)
         xml_path = os.path.join(CSV_FOLDER, "obchpartner.xml")
         if os.path.exists(xml_path):
             try:
                 import xml.etree.ElementTree as ET
-                # Otevíráme soubor striktně ve windows-1250 (cp1250), čímž získáme zpět všechna "Č, Ř, Ž"
                 with open(xml_path, 'r', encoding='cp1250', errors='replace') as f:
                     xml_data = f.read()
                 
-                # Vyčištění hlavičky pro bezpečnost
                 xml_data = re.sub(r'<\?xml.*\?>', '', xml_data)
                 root = ET.fromstring(xml_data)
                 
@@ -352,7 +347,7 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
     except Exception: return False
 
 # ==========================================
-# 4. PDF ENGINE (W-SERVIS ENTERPRISE PERFECT)
+# 4. PDF ENGINE (W-SERVIS MATRIX PERFECT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
@@ -418,12 +413,22 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.add_page()
     
     def fmt_price(num):
+        if num == 0: return "0,00"
         s = f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
         if s.endswith(",00"): return s[:-3]
         if s.endswith("0") and "," in s: return s[:-1]
         return s
 
-    def fmt_tot(num): return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
+    def fmt_q(val):
+        if not val or val == 0: return ""
+        v_str = f"{val:.2f}".replace('.', ',')
+        if v_str.endswith(",00"): return v_str[:-3]
+        if v_str.endswith("0") and "," in v_str: return v_str[:-1]
+        return v_str
+
+    def fmt_tot(num): 
+        if num == 0: return "0,00"
+        return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
 
     def get_safe_str(d, key):
         v = d.get(key, "")
@@ -448,42 +453,53 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.ln(5)
 
     def draw_category(cat_num_title: str, item_cats: List[str]):
-        cat_items = [[k, v["q"], v["p"]] for k, v in items_dict.items() if v["cat"] in item_cats and v["q"] > 0]
+        cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v["q"] > 0]
         if not cat_items: return 0.0
 
         pdf.set_font(pismo, "B", 9)
-        pdf.cell(95, 4, f" {cat_num_title}", border=0)
+        pdf.cell(90, 4, f" {cat_num_title}", border=0)
         pdf.set_font(pismo, "", 8)
         pdf.cell(20, 4, "Cena", align="R")
-        pdf.cell(45, 4, "ks/výk. - jednotlivé objekty", align="R")
-        pdf.cell(30, 4, "CELKEM", align="R", ln=True)
+        pdf.cell(40, 4, "ks/výk. - jednotlivé objekty", align="C")
+        pdf.cell(15, 4, "", align="R")
+        pdf.cell(25, 4, "CELKEM", align="R", ln=True)
         
-        pdf.cell(95, 4, "", border=0)
+        pdf.cell(90, 4, "", border=0)
         pdf.cell(20, 4, "bez DPH", align="R")
-        pdf.cell(30, 4, "1  2  3  4  5", align="R")
+        pdf.cell(8, 4, "1", align="R")
+        pdf.cell(8, 4, "2", align="R")
+        pdf.cell(8, 4, "3", align="R")
+        pdf.cell(8, 4, "4", align="R")
+        pdf.cell(8, 4, "5", align="R")
         pdf.cell(15, 4, "ks/výk", align="R")
-        pdf.cell(30, 4, "Kč bez DPH", align="R", ln=True)
+        pdf.cell(25, 4, "Kč bez DPH", align="R", ln=True)
 
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
-        for name, qty, price in cat_items:
+        for name, vals in cat_items:
+            q1, q2, q3, q4, q5 = vals.get("q1",0), vals.get("q2",0), vals.get("q3",0), vals.get("q4",0), vals.get("q5",0)
+            qty, price = vals["q"], vals["p"]
             line_total = qty * price
             cat_total += line_total
             
-            name_disp = "  " + name[:65] + ("..." if len(name) > 65 else "")
-            pdf.cell(95, 5, name_disp)
+            name_disp = "  " + name[:60] + ("..." if len(name) > 60 else "")
+            pdf.cell(90, 5, name_disp)
             pdf.cell(20, 5, fmt_price(price), align="R")
             
-            pdf.cell(30, 5, "", align="R") 
-            q_disp = f"{qty:,.2f}".rstrip("0").rstrip(".") if qty % 1 != 0 else f"{int(qty)}"
-            pdf.cell(15, 5, q_disp, align="R")
-            pdf.cell(30, 5, fmt_tot(line_total), align="R", ln=True)
+            pdf.cell(8, 5, fmt_q(q1), align="R")
+            pdf.cell(8, 5, fmt_q(q2), align="R")
+            pdf.cell(8, 5, fmt_q(q3), align="R")
+            pdf.cell(8, 5, fmt_q(q4), align="R")
+            pdf.cell(8, 5, fmt_q(q5), align="R")
+            
+            pdf.cell(15, 5, fmt_q(qty), align="R")
+            pdf.cell(25, 5, fmt_tot(line_total), align="R", ln=True)
             
         pdf.ln(1)
         pdf.set_font(pismo, "B", 9)
         nazev_celkem = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
-        pdf.cell(160, 5, f"C E L K E M   {nazev_celkem}", align="R")
-        pdf.cell(30, 5, fmt_tot(cat_total), align="R", ln=True)
+        pdf.cell(165, 5, f"C E L K E M   {nazev_celkem}", align="R")
+        pdf.cell(25, 5, fmt_tot(cat_total), align="R", ln=True)
         pdf.ln(3)
         return cat_total
 
@@ -501,8 +517,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
     pdf.ln(4)
     pdf.set_font(pismo, "B", 10)
-    pdf.cell(160, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
-    pdf.cell(30, 6, f"{fmt_tot(total_sum)} Kč", align="R", ln=True)
+    pdf.cell(165, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
+    pdf.cell(25, 6, f"{fmt_tot(total_sum)} Kč", align="R", ln=True)
     pdf.ln(12)
 
     firma = get_safe_str(zakaznik, 'FIRMA')
@@ -575,7 +591,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 26.0 Native XML / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 27.0 Matrix Layout / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -584,20 +600,16 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         return None
 
 # ==========================================
-# 5. STREAMLIT UI - ENTERPRISE EDITION
+# 5. STREAMLIT UI - MATRIX LAYOUT
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v26.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v27.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px;
-    }
+    .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px; }
     .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; font-weight: bold; }
-    .cart-box {
-        background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ff4b4b; margin-top: 15px;
-    }
+    .cart-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ff4b4b; margin-top: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -611,7 +623,6 @@ def load_all_customers() -> Optional[pd.DataFrame]:
 
 df_customers = load_all_customers()
 
-# --- HLAVNÍ MENU ---
 menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence"])
 
 celkem_polozek = 0
@@ -625,7 +636,6 @@ for k, v in st.session_state.dynamic_items.items():
     celkem_cena += (v["q"] * v["p"])
 
 if menu_volba == "📝 Tvorba Dodacího listu":
-    # --- SIDEBAR PRO DL ---
     with st.sidebar:
         st.header("🏢 Hlavička Dodacího listu")
         typ_dl = st.radio("Hlavička 1. sekce:", ["Standard (Kontroly)", "Opravy (Prior)"])
@@ -677,7 +687,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             ulozene_objekty = get_objects_from_db(aktualni_ico)
             
             if ulozene_objekty:
-                vybrane_objekty = st.multiselect("Vyberte objekty z paměti:", options=ulozene_objekty, default=[])
+                vybrane_objekty = st.multiselect("Vyberte objekty (Objekt 1 až 5):", options=ulozene_objekty, default=[])
                 objekty_text = "\n".join(vybrane_objekty)
                 
             with st.expander("➕ Přidat nový objekt"):
@@ -696,25 +706,44 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         </div>
         """, unsafe_allow_html=True)
 
-    # --- MAIN AREA PRO DL ---
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 26.0 Native XML | 100% zobrazení češtiny u všech klientů")
+    st.caption("Verze 27.0 Matrix | Podpora přesného zadávání pro jednotlivé objekty 1 až 5")
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
+
+    def render_table_header():
+        """Vykreslí hlavičku pro 5 objektů (Matrix layout)"""
+        cols = st.columns([3.5, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8])
+        with cols[0]: st.markdown("**Název položky**")
+        with cols[1]: st.markdown("**Cena**")
+        with cols[2]: st.markdown("**O1**", help="Objekt 1")
+        with cols[3]: st.markdown("**O2**", help="Objekt 2")
+        with cols[4]: st.markdown("**O3**", help="Objekt 3")
+        with cols[5]: st.markdown("**O4**", help="Objekt 4")
+        with cols[6]: st.markdown("**O5**", help="Objekt 5")
 
     def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, step_val: float = 1.0) -> None:
         p_val = get_price(cat_key, item_name)
         if p_val == 0.0: p_val = fallback_price
 
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1: st.write(f"**{item_name}**")
-        with col2: q = st.number_input(f"Ks_{row_id}", min_value=0.0, step=float(step_val), key=f"q_{row_id}", label_visibility="collapsed")
-        with col3: p = st.number_input(f"P_{row_id}", min_value=0.0, step=0.1, value=float(p_val), key=f"p_{row_id}", label_visibility="collapsed")
+        cols = st.columns([3.5, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8])
+        with cols[0]: st.write(f"{item_name}")
+        with cols[1]: p = st.number_input(f"P_{row_id}", min_value=0.0, step=0.1, value=float(p_val), key=f"p_{row_id}", label_visibility="collapsed")
         
-        st.session_state.data_zakazky[item_name] = {"q": float(q), "p": float(p), "cat": cat_key}
+        with cols[2]: q1 = st.number_input(f"1_{row_id}", min_value=0.0, step=float(step_val), key=f"q1_{row_id}", label_visibility="collapsed")
+        with cols[3]: q2 = st.number_input(f"2_{row_id}", min_value=0.0, step=float(step_val), key=f"q2_{row_id}", label_visibility="collapsed")
+        with cols[4]: q3 = st.number_input(f"3_{row_id}", min_value=0.0, step=float(step_val), key=f"q3_{row_id}", label_visibility="collapsed")
+        with cols[5]: q4 = st.number_input(f"4_{row_id}", min_value=0.0, step=float(step_val), key=f"q4_{row_id}", label_visibility="collapsed")
+        with cols[6]: q5 = st.number_input(f"5_{row_id}", min_value=0.0, step=float(step_val), key=f"q5_{row_id}", label_visibility="collapsed")
+        
+        q_tot = q1 + q2 + q3 + q4 + q5
+        st.session_state.data_zakazky[item_name] = {
+            "q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5, "q": q_tot, "p": float(p), "cat": cat_key
+        }
 
     with tabs[0]:
         st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
+        render_table_header()
         item_row("HP", "Kontrola HP (shodný)", 29.40, "h1")
         item_row("HP", "Kontrola HP (neshodný - opravitelný)", 19.70, "h2")
         item_row("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", 23.50, "h3")
@@ -722,11 +751,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         mnozstvi_neopravitelne = st.session_state.data_zakazky.get("Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", {}).get("q", 0)
         if mnozstvi_neopravitelne > 0:
             st.warning("⚠️ Zadejte prosím důvody vyřazení neopravitelných přístrojů.")
-            vybrane_kody = st.multiselect(
-                "Důvody vyřazení (A-K):",
-                options=list(DUVODY_VYRAZENI.keys()),
-                format_func=lambda x: f"Kód {x} - {DUVODY_VYRAZENI[x]}"
-            )
+            vybrane_kody = st.multiselect("Důvody vyřazení (A-K):", options=list(DUVODY_VYRAZENI.keys()), format_func=lambda x: f"Kód {x} - {DUVODY_VYRAZENI[x]}")
             st.session_state.vyrazene_kody = vybrane_kody
         else:
             st.session_state.vyrazene_kody = []
@@ -737,6 +762,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     with tabs[1]:
         st.subheader("1. KONTROLY ZAŘÍZENÍ PRO ZÁSOBOVÁNÍ POŽÁRNÍ VODOU")
+        render_table_header()
         item_row("Voda", "Prohlídka zařízení do 5 ks výtoků", 123.00, "v1")
         item_row("Voda", "Kontrola zařízení bez měření průtoku do 5 ks výtoků", 141.00, "v2")
         item_row("Voda", "Prohlídka zařízení od 6 do 10 ks výtoků", 159.00, "v3")
@@ -746,6 +772,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     with tabs[2]:
         st.subheader("3. OPRAVY HASICÍCH PŘÍSTROJŮ")
+        render_table_header()
         item_row("Opravy", "CO2-5F/ETS", 418.00, "opr1")
         item_row("Opravy", "P6 Če (21A/)", 385.00, "opr2")
         item_row("Opravy", "S1,5 Kod", 280.00, "opr3")
@@ -755,6 +782,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     with tabs[3]:
         st.subheader("2. VYHODNOCENÍ KONTROLY + NÁHRADY")
+        render_table_header()
         item_row("Servisni_ukony", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)", 5.80, "s_hp1")
         item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení do 5 ks výtoků", 85.00, "s1")
         item_row("Servisni_ukony", "Vyhodnocení kontroly zařízení od 6 do 10 ks výtoků", 117.00, "s2")
@@ -777,32 +805,41 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.warning("⚠️ Sklad je prázdný. Klikněte vlevo v Evidenci na Synchronizovat.")
         else:
             items_dict_lookup = {item["nazev"]: item for item in db_items}
-            c1, c2, c3, c4 = st.columns([4, 1.5, 1.5, 1.5])
-            with c1:
-                zvolena_polozka = st.selectbox("Vyberte položku ze skladu:", ["-- Vyberte --"] + list(items_dict_lookup.keys()))
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([3, 1.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1])
+            with c1: zvolena_polozka = st.selectbox("Vyberte položku ze skladu:", ["-- Vyberte --"] + list(items_dict_lookup.keys()))
             
             if zvolena_polozka != "-- Vyberte --":
                 def_cena = items_dict_lookup[zvolena_polozka]["cena"]
                 with c2: cena_input = st.number_input("Cena/ks (Kč)", value=def_cena, step=1.0)
-                with c3: mnozstvi_input = st.number_input("Množství", value=1.0, min_value=0.1, step=1.0)
-                with c4:
+                with c3: mq1 = st.number_input("O1", value=1.0, min_value=0.0, step=1.0)
+                with c4: mq2 = st.number_input("O2", value=0.0, min_value=0.0, step=1.0)
+                with c5: mq3 = st.number_input("O3", value=0.0, min_value=0.0, step=1.0)
+                with c6: mq4 = st.number_input("O4", value=0.0, min_value=0.0, step=1.0)
+                with c7: mq5 = st.number_input("O5", value=0.0, min_value=0.0, step=1.0)
+                
+                with c8:
                     st.write("")
-                    if st.button("➕ Přidat", use_container_width=True):
+                    if st.button("➕ Přidat"):
                         interni_kat = items_dict_lookup[zvolena_polozka]["internal_cat"]
                         if interni_kat == "zbozi" or interni_kat not in CATEGORY_MAP.values(): interni_kat = "Zboží"
+                        mq_tot = mq1 + mq2 + mq3 + mq4 + mq5
+                        
                         if zvolena_polozka in st.session_state.dynamic_items:
-                            st.session_state.dynamic_items[zvolena_polozka]["q"] += mnozstvi_input
-                            st.session_state.dynamic_items[zvolena_polozka]["p"] = cena_input
+                            di = st.session_state.dynamic_items[zvolena_polozka]
+                            di["q1"] += mq1; di["q2"] += mq2; di["q3"] += mq3; di["q4"] += mq4; di["q5"] += mq5
+                            di["q"] += mq_tot; di["p"] = cena_input
                         else:
-                            st.session_state.dynamic_items[zvolena_polozka] = {"q": mnozstvi_input, "p": cena_input, "cat": interni_kat}
+                            st.session_state.dynamic_items[zvolena_polozka] = {
+                                "q1": mq1, "q2": mq2, "q3": mq3, "q4": mq4, "q5": mq5, "q": mq_tot, "p": cena_input, "cat": interni_kat
+                            }
                         st.rerun()
 
         if st.session_state.dynamic_items:
             st.divider()
             for k, v in list(st.session_state.dynamic_items.items()):
                 ca, cb, cc, cd = st.columns([5, 2, 2, 1])
-                ca.write(f"• {k}")
-                cb.write(f"{v['q']} ks")
+                ca.write(f"• {k} (O1:{v['q1']}, O2:{v['q2']}, O3:{v['q3']}, O4:{v['q4']}, O5:{v['q5']})")
+                cb.write(f"Celkem: {v['q']} ks")
                 cc.write(f"{v['q']*v['p']:.2f} Kč")
                 if cd.button("❌", key=f"del_{k}"):
                     del st.session_state.dynamic_items[k]
