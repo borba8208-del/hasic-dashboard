@@ -95,7 +95,7 @@ if "vyrazene_kody" not in st.session_state:
     st.session_state.vyrazene_kody = []
 
 # ==========================================
-# 2. CENÍKY – PŘÍSNÁ KONTROLA A IMPORT
+# 2. CENÍKY – PŘÍSNÁ KONTROLA A IMPORT EXPORTU
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -108,9 +108,12 @@ def normalize_category_to_table(cat_key: str) -> str:
 def safe_read_csv(path: str) -> Optional[pd.DataFrame]:
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return None
-    for enc in ("utf-8", "cp1250", "windows-1250"):
+    for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
         try:
-            return pd.read_csv(path, sep=";", encoding=enc, on_bad_lines='skip')
+            df = pd.read_csv(path, sep=";", encoding=enc, on_bad_lines='skip')
+            if len(df.columns) == 1 and "," in df.columns[0]:
+                df = pd.read_csv(path, sep=",", encoding=enc, on_bad_lines='skip')
+            return df
         except Exception:
             continue
     return None
@@ -119,7 +122,6 @@ def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
-        # 1. Načtení standardních ceníků
         for ui_key, csv_name in CATEGORY_MAP.items():
             file_path = os.path.join(CSV_FOLDER, f"{csv_name}.csv")
             table_name = normalize_category_to_table(ui_key)
@@ -151,7 +153,6 @@ def import_all_ceniky() -> str:
             except Exception as e:
                 log_messages.append(f"❌ {csv_name}: Chyba DB – {e}")
                 
-        # 2. Načtení velkého exportu (expimp.csv)
         expimp_path = os.path.join(CSV_FOLDER, "expimp.csv")
         if os.path.exists(expimp_path):
             df_exp = safe_read_csv(expimp_path)
@@ -227,10 +228,8 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
     return items
 
 # ==========================================
-# 3. ARES API A ZÁKAZNÍCI
+# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (BEZ ARES)
 # ==========================================
-import requests
-
 def validate_ico(ico: str) -> bool:
     ico = str(ico or "").strip()
     if not ico.isdigit() or len(ico) != 8:
@@ -244,9 +243,7 @@ def validate_ico(ico: str) -> bool:
 
 def load_local_customers() -> Optional[pd.DataFrame]:
     path = os.path.join("data", "ceniky", "zakaznici.csv")
-    if not os.path.exists(path): return None
-    try: return pd.read_csv(path, sep=";")
-    except: return None
+    return safe_read_csv(path)
 
 def find_customer_by_ico_local(ico: str) -> Optional[Dict[str, Any]]:
     if not validate_ico(ico): return None
@@ -272,43 +269,8 @@ def build_form_data_from_customer(ico: str) -> Optional[Dict[str, Any]]:
         "TELEFON": cust.get("telefon", ""),
         "EMAIL": cust.get("email", ""),
         "UCET": cust.get("ucet", ""),
-        "POZNAMKA": cust.get("poznamka", ""),
-        "ARES_OK": False,
+        "POZNAMKA": cust.get("poznamka", "")
     }
-
-def compare_customer_xml_vs_ares(ico: str) -> Optional[Dict[str, Any]]:
-    local = build_form_data_from_customer(ico)
-    remote = get_company_from_ares(ico)
-    if not local and not remote: return None
-    def safe(v): return "" if pd.isna(v) or str(v) in ["nan", "None", ""] else str(v).strip()
-    diff = {}
-    keys = ["FIRMA", "ULICE", "CP", "CO", "ADRESA3", "PSC", "DIC"]
-    for k in keys:
-        lv = safe(local.get(k)) if local else ""
-        rv = safe(remote.get(k)) if remote else ""
-        if lv != rv: diff[k] = (lv, rv)
-    return {"ico": ico, "local": local, "ares": remote, "diff": diff}
-
-def get_company_from_ares(ico: str | int) -> Optional[Dict[str, Any]]:
-    ico_clean = str(ico).strip().zfill(8)
-    url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico_clean}"
-    try:
-        response = requests.get(url, timeout=5)
-        if response.status_code != 200: return None
-        data = response.json()
-        es = data.get("ekonomickySubjekt", {})
-        sidlo = es.get("sidlo", {})
-        return {
-            "FIRMA": es.get("obchodniJmeno", ""),
-            "DIC": es.get("dic", ""),
-            "ULICE": sidlo.get("nazevUlice", ""),
-            "CP": sidlo.get("cisloDomovni", ""),
-            "CO": sidlo.get("cisloOrientacni", ""),
-            "ADRESA3": sidlo.get("nazevObce", ""),
-            "PSC": sidlo.get("psc", ""),
-            "ARES_OK": True,
-        }
-    except Exception: return None
 
 def update_customer_in_db(zakaznik: Dict[str, Any]) -> bool:
     if not os.path.exists(DB_PATH): return False
@@ -516,29 +478,25 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(30, 6, f"{fmt_tot(total_sum)} Kč", align="R", ln=True)
     pdf.ln(12)
 
-    # ---------------------------------------------
-    # NEPRŮSTŘELNÉ SESTAVENÍ ADRESY (Fallback Logic)
-    # ---------------------------------------------
+    # SESTAVENÍ ADRESY (Lokální logika W-SERVIS)
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = get_safe_str(zakaznik, 'ICO')
     dic = get_safe_str(zakaznik, 'DIC')
     
-    # Pokud ARES vrátil IČO do pole FIRMA (nebo chybí název v DB)
     if not firma or firma == ico:
         firma = f"Neznámý název (IČO: {ico})"
 
     ul = get_safe_str(zakaznik, "ULICE")
     cp = get_safe_str(zakaznik, "CP")
     co = get_safe_str(zakaznik, "CO")
-    adr1 = get_safe_str(zakaznik, "ADRESA1") # Stará W-SERVIS adresa
+    adr1 = get_safe_str(zakaznik, "ADRESA1")
     
-    # Pokud máme ARES ulici a č.p., složíme to
     if ul and cp:
         adr_line1 = f"{ul} {cp}"
         if co and co != "0": adr_line1 += f"/{co}"
     elif ul:
         adr_line1 = ul
-    elif adr1: # Nouzový fallback na lokální databázi W-SERVIS!
+    elif adr1: 
         adr_line1 = adr1
     else:
         adr_line1 = ""
@@ -597,7 +555,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 23.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 24.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -608,7 +566,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - HLAVNÍ NAVIGACE A OBSAH
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Master v23.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Master v24.0", layout="wide", page_icon="🛡️")
 
 def load_all_customers() -> Optional[pd.DataFrame]:
     if not os.path.exists(DB_PATH): return None
@@ -634,7 +592,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         st.divider()
         
         if df_customers is not None:
-            # Sjednotíme vyhledávání do jedné chytré roletky (Streamlit v ní nativně umí hledat)
+            # Chytrá roletka pro vyhledávání
             filt = df_customers.copy()
             filt["FIRMA"] = filt["FIRMA"].fillna("Neznámý název")
             filt = filt.sort_values(by="FIRMA", key=lambda s: s.astype(str).str.lower())
@@ -648,7 +606,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
                 opts = filt.apply(format_cust, axis=1).tolist()
 
-                # Zachování výběru po refreshi stránky
                 default_idx = None
                 if st.session_state.vybrany_zakaznik:
                     curr_ico = str(st.session_state.vybrany_zakaznik.get("ICO", "")).strip()
@@ -661,7 +618,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     "🔍 Vyhledat odběratele (pište název nebo IČO):",
                     options=opts,
                     index=default_idx if default_idx is not None else 0,
-                    help="Klikněte do pole a začněte psát. Systém vyhledává v názvech firem i v IČO."
+                    help="Vyhledává se POUZE ve vaší lokální W-SERVIS databázi (nevyžaduje internet)."
                 )
                 
                 idx = opts.index(sel)
@@ -670,35 +627,16 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                 if (st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik.get("ICO") != curr.get("ICO")):
                     ico_val = str(curr.get("ICO", "")).strip()
                     
-                    with st.spinner("Ověřuji přes ARES a lokální DB..."):
+                    with st.spinner("Načítám data zákazníka z lokální databáze..."):
                         if not validate_ico(ico_val):
                             st.warning(f"Upozornění: Neplatné IČO ({ico_val})")
                         
+                        # Čteme data POUZE z lokální databáze / CSV (Žádný ARES)
                         local_data = build_form_data_from_customer(ico_val)
                         if local_data:
                             curr.update(local_data)
-                            
-                        # Bezpečný ARES fallback
-                        if not curr.get("ARES_OK"):
-                            try:
-                                ares = get_company_from_ares(ico_val)
-                                if ares and ares.get("FIRMA"):
-                                    curr.update(ares)
-                                    update_customer_in_db(curr)
-                                elif ares is None:
-                                    st.toast("Spojení s ARES selhalo (Zablokováno státem). Načítám z vaší lokální paměti W-SERVIS.", icon="⚠️")
-                            except Exception:
-                                pass
                                 
                     st.session_state.vybrany_zakaznik = curr.copy()
-                    
-                if st.session_state.vybrany_zakaznik:
-                    ico_val = str(st.session_state.vybrany_zakaznik.get("ICO", "")).strip()
-                    diff_result = compare_customer_xml_vs_ares(ico_val)
-                    if diff_result and diff_result.get("diff"):
-                        with st.expander("⚠️ Nalezeny rozdíly mezi lokální evidencí a ARES"):
-                            st.info("Rozdíly (Lokální vs. ARES):")
-                            st.json(diff_result["diff"])
 
             else: st.warning("Nenalezeno.")
 
@@ -731,7 +669,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     # --- MAIN AREA PRO DL ---
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 23.0 | Neprůstřelná Adresa | Integrován import z expimp.csv")
+    st.caption("Verze 24.0 | 100% Offline Databáze zákazníků | Žádné prodlevy")
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
 
@@ -803,12 +741,11 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     with tabs[4]:
         st.subheader("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND (Dynamická nabídka)")
-        st.info("Zde se automaticky zobrazuje zboží načtené z vašich ceníků a ze souboru **expimp.csv**.")
         zbozi_kategorie = ["Zboží", "ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Ostatni", "OZO", "zbozi"]
         db_items = get_items_from_db(zbozi_kategorie)
         
         if not db_items:
-            st.warning("⚠️ Nejsou nahrány žádné ceníky pro Zboží. Klikněte vlevo na Synchronizovat s DB.")
+            st.warning("⚠️ Nejsou nahrány žádné ceníky pro Zboží.")
         else:
             items_dict_lookup = {item["nazev"]: item for item in db_items}
             c1, c2, c3, c4 = st.columns([4, 1.5, 1.5, 1.5])
