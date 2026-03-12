@@ -557,7 +557,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.ln(8)
 
     # ----------------------------------------------
-    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY (CORPORATE GRID)
+    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY (CORPORATE FINAL)
     # ----------------------------------------------
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
@@ -580,62 +580,70 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     ps = get_safe_str(zakaznik, "PSC")
     adr_line2 = f"{ps} {ob}".strip()
 
+    # Dvousloupcová tabulka pro Odběratele a Objekty
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
-    pdf.cell(65, 6, " Odběratel:", border=1, fill=True)
-    pdf.cell(60, 6, " Umístění v objektech (O1 - O5):", border=1, fill=True)
-    pdf.cell(65, 6, " Záznam o kontrole a předání:", border=1, fill=True, ln=True)
+    pdf.cell(95, 6, " Odběratel:", border=1, fill=True)
+    pdf.cell(95, 6, " Umístění kontrolovaných HP/PV v objektech:", border=1, fill=True, ln=True)
 
     pdf.set_font(pismo, "", 9)
     
     # Řádek 1
-    pdf.cell(65, 5, f"  Firma:  {firma[:32]}", border="L R")
-    pdf.cell(60, 5, f"  O1:  {objekty_map.get(1, '')[:30]}", border="L R")
-    pdf.set_font(pismo, "B", 8)
-    pdf.cell(65, 5, "  Za zhotovitele (Předal):", border="L R", ln=True)
-    pdf.set_font(pismo, "", 9)
+    pdf.cell(95, 5, f"  Firma:  {firma[:45]}", border="L R")
+    pdf.cell(95, 5, f"  1:  {objekty_map.get(1, '')[:45]}", border="L R", ln=True)
     
     # Řádek 2
-    pdf.cell(65, 5, f"  Ulice:  {adr_line1[:32]}", border="L R")
-    pdf.cell(60, 5, f"  O2:  {objekty_map.get(2, '')[:30]}", border="L R")
-    pdf.cell(65, 5, "  Kontrolní technik: Tomáš Urbánek", border="L R", ln=True)
+    pdf.cell(95, 5, f"  Ulice:  {adr_line1[:45]}", border="L R")
+    pdf.cell(95, 5, f"  2:  {objekty_map.get(2, '')[:45]}", border="L R", ln=True)
     
     # Řádek 3
-    pdf.cell(65, 5, f"  Město:  {adr_line2[:32]}", border="L R")
-    pdf.cell(60, 5, f"  O3:  {objekty_map.get(3, '')[:30]}", border="L R")
-    pdf.set_font(pismo, "B", 8)
-    pdf.cell(65, 5, "  Odborně způsobilá osoba v PO: Ilja Urbánek", border="L R", ln=True)
-    pdf.set_font(pismo, "", 9)
+    pdf.cell(95, 5, f"  Město:  {adr_line2[:45]}", border="L R")
+    pdf.cell(95, 5, f"  3:  {objekty_map.get(3, '')[:45]}", border="L R", ln=True)
     
     # Řádek 4
-    pdf.cell(65, 5, f"  IČO:    {ico}", border="L R")
-    pdf.cell(60, 5, f"  O4:  {objekty_map.get(4, '')[:30]}", border="L R")
-    pdf.cell(65, 5, "  ...................................................", border="L R", align="C", ln=True)
+    pdf.cell(95, 5, f"  IČO:    {ico}", border="L R")
+    pdf.cell(95, 5, f"  4:  {objekty_map.get(4, '')[:45]}", border="L R", ln=True)
     
-    # Řádek 5
-    pdf.cell(65, 5, f"  DIČ:    {dic}", border="L R")
-    pdf.cell(60, 5, f"  O5:  {objekty_map.get(5, '')[:30]}", border="L R")
-    pdf.set_font(pismo, "B", 8)
-    pdf.cell(65, 5, "  Za odběratele (Převzal):", border="L R", ln=True)
-    pdf.set_font(pismo, "", 9)
-    
-    # Řádek 6 (Dokončení spodní hrany)
-    pdf.cell(65, 6, "", border="L B R")
-    pdf.cell(60, 6, "", border="L B R")
-    pdf.cell(65, 6, "  ...................................................", border="L B R", align="C", ln=True)
+    # Řádek 5 (Dokončení spodní hrany)
+    pdf.cell(95, 6, f"  DIČ:    {dic}", border="L B R")
+    pdf.cell(95, 6, f"  5:  {objekty_map.get(5, '')[:45]}", border="L B R", ln=True)
             
-    pdf.ln(5)
+    pdf.ln(4)
 
-    pdf.set_font(pismo, "", 7)
-    note1 = "Poznámka: HP - SHODNÝ - splňuje veškeré podmínky stanovené odbornými pokyny výrobce,  HP - NESHODNÝ - nesplňuje podmínky stanovené odbornými pokyny"
-    note2 = "výrobce - je a) opravitelný nebo b) neopravitelný - nutné vyřazení z provozu a odborná ekologická likvidace (neslouží jako doklad pro státní evidenci odpadů)."
-    pdf.multi_cell(0, 3, note1 + "\n" + note2)
+    # SAMOSTATNÁ TABULKA PRO PODPISY (Odděleno pod hlavní tabulkou)
+    pdf.set_font(pismo, "B", 9)
+    pdf.set_fill_color(235, 235, 235)
+    pdf.cell(190, 6, " Záznam o kontrole a předání:", border=1, fill=True, ln=True)
+
+    y_sig = pdf.get_y()
+    pdf.rect(10, y_sig, 190, 24)
+
+    pdf.set_xy(10, y_sig + 2)
+    pdf.set_font(pismo, "B", 8)
+    pdf.cell(95, 5, "  Za zhotovitele (Předal):", ln=False)
+    pdf.cell(95, 5, "  Za odběratele (Převzal):", ln=True)
+
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(95, 5, "  Kontrolní technik: Tomáš Urbánek", ln=False)
+    pdf.cell(95, 5, "  Jméno hůlkovým písmem:", ln=True)
+
+    pdf.cell(95, 5, "  Odborně způsobilá osoba v PO: Ilja Urbánek", ln=False)
+    pdf.cell(95, 5, "  ...........................................................", ln=True)
+
+    pdf.ln(1)
+    pdf.cell(95, 5, "  ...........................................................", ln=False)
+    pdf.cell(95, 5, "  ...........................................................", ln=True)
+
+    pdf.set_font(pismo, "I", 7)
+    pdf.cell(95, 3, "   Podpisy a razítka zhotovitele", ln=False)
+    pdf.cell(95, 3, "   Podpis a razítko odběratele", ln=True)
+    pdf.set_y(y_sig + 26)
     
     if vyrazene_kody:
         pdf.ln(2)
         pdf.set_font(pismo, "B", 8)
         pdf.set_fill_color(245, 230, 230)
-        pdf.cell(190, 5, " Zaznamenané důvody vyřazení neopravitelných HP:", border="L T R", fill=True, ln=True)
+        pdf.cell(190, 5, " Zaznamenané důvody vyřazení neopravitelných HP (neslouží jako doklad pro evidenci odpadů):", border="L T R", fill=True, ln=True)
         pdf.set_font(pismo, "", 8)
         for i, kod in enumerate(vyrazene_kody):
             text_duvodu = DUVODY_VYRAZENI.get(kod, "")
@@ -643,7 +651,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
     pdf.ln(4)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 33.0 Corporate Strict / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 34.0 Corporate Final / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -736,6 +744,26 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     
                 aktualni_ico = clean_ico(curr.get("ICO"))
                 ulozene_objekty = get_objects_from_db(aktualni_ico)
+                
+                # --- NOVINKA: Automatická nabídka adresy klienta jako objektu ---
+                ul_kl = str(curr.get("ULICE", "")).strip()
+                cp_kl = str(curr.get("CP", "")).strip()
+                co_kl = str(curr.get("CO", "")).strip()
+                ob_kl = str(curr.get("ADRESA3", "")).strip()
+
+                adr_slozena = ""
+                if ul_kl and cp_kl:
+                    adr_slozena = f"{ul_kl} {cp_kl}"
+                    if co_kl and co_kl != "0": adr_slozena += f"/{co_kl}"
+                elif ul_kl: adr_slozena = ul_kl
+                elif cp_kl: adr_slozena = cp_kl
+
+                if adr_slozena and ob_kl: adr_slozena += f", {ob_kl}"
+                elif ob_kl: adr_slozena = ob_kl
+
+                if adr_slozena and adr_slozena not in ulozene_objekty:
+                    ulozene_objekty.insert(0, adr_slozena)
+
             else: st.warning("Nenalezeno.")
 
         st.subheader("🏢 Správa objektů v DB")
