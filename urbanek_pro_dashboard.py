@@ -72,7 +72,6 @@ def init_db():
     open(DB_PATH, 'a').close()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    # Tabulka pro objekty zákazníků
     cur.execute("""
         CREATE TABLE IF NOT EXISTS objekty (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +80,6 @@ def init_db():
             UNIQUE(ico, nazev_objektu)
         )
     """)
-    # NOVÁ TABULKA: Přesná kopie Access formuláře pro evidenci HP
     cur.execute("""
         CREATE TABLE IF NOT EXISTS evidence_hp (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,11 +103,12 @@ def init_db():
 
 init_db()
 
-# Paměť stavu
 if "data_zakazky" not in st.session_state: st.session_state.data_zakazky = {}
 if "dynamic_items" not in st.session_state: st.session_state.dynamic_items = {}
 if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik = None
 if "vyrazene_kody" not in st.session_state: st.session_state.vyrazene_kody = []
+if "loaded_ico" not in st.session_state: st.session_state.loaded_ico = None
+if "evidence_df" not in st.session_state: st.session_state.evidence_df = pd.DataFrame()
 
 # ==========================================
 # 2. INTELIGENTNÍ IMPORT DATABÁZÍ
@@ -220,7 +219,6 @@ def import_all_ceniky() -> str:
             try:
                 import xml.etree.ElementTree as ET
                 xml_data = None
-                
                 for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
                     try:
                         with open(xml_path, 'r', encoding=enc) as f:
@@ -301,7 +299,7 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
     return items
 
 # ==========================================
-# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ & OBJEKTŮ
+# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (OFFLINE)
 # ==========================================
 def validate_ico(ico: Any) -> bool:
     ico_str = clean_ico(ico)
@@ -375,7 +373,7 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
     except Exception: return False
 
 # ==========================================
-# 4. PDF ENGINE (W-SERVIS MATRIX PERFECT)
+# 4. PDF ENGINE (TABLE MASTER)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
@@ -435,7 +433,7 @@ class UrbaneKPDF(FPDF):
     def footer(self) -> None:
         pass
 
-def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty: str, typ_dl: str, vyrazene_kody: List[str]) -> Optional[bytes]:
+def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty_map: Dict[int, str], typ_dl: str, vyrazene_kody: List[str]) -> Optional[bytes]:
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
     pdf.add_page()
@@ -462,45 +460,49 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         v = d.get(key, "")
         return "" if pd.isna(v) or str(v).lower() in ["nan", "none", "null"] else str(v).strip()
 
+    # NADPIS DOKUMENTU
     y_dl = pdf.get_y()
     pdf.set_font(pismo, "B", 12)
     pdf.cell(50, 5, "DODACÍ LIST")
     pdf.set_font(pismo, "", 9)
     pdf.cell(50, 5, "(práce, zboží, materiál)")
 
+    # TABULKA PRO ČÍSLO ZAKÁZKY
     pdf.set_xy(110, y_dl)
-    pdf.cell(25, 4, "Poř.číslo" if "Standard" in typ_dl else "Číslo DL")
-    pdf.cell(30, 4, "Číslo zakázky")
-    pdf.cell(35, 4, "Jméno reviz. technika", ln=True)
+    pdf.set_font(pismo, "B", 9)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(25, 5, "Poř.číslo" if "Standard" in typ_dl else "Číslo DL", border=1, align="C", fill=True)
+    pdf.cell(25, 5, "Zakázka", border=1, align="C", fill=True)
+    pdf.cell(40, 5, "Revizní technik", border=1, align="C", fill=True, ln=True)
+    
+    pdf.set_xy(110, y_dl + 5)
+    pdf.set_font(pismo, "", 9)
+    pdf.cell(25, 5, dl_number, border=1, align="C")
+    pdf.cell(25, 5, zakazka, border=1, align="C")
+    pdf.cell(40, 5, technik, border=1, align="C", ln=True)
+    pdf.ln(8)
 
-    pdf.set_xy(110, y_dl + 4)
-    pdf.set_font(pismo, "B", 10)
-    pdf.cell(25, 5, dl_number)
-    pdf.cell(30, 5, zakazka)
-    pdf.cell(35, 5, technik, ln=True)
-    pdf.ln(5)
-
+    # UNIVERZÁLNÍ KRESLIČ TABULEK
     def draw_category(cat_num_title: str, item_cats: List[str]):
         cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v.get("q", 0) > 0]
         if not cat_items: return 0.0
 
+        # Hlavička sekce
         pdf.set_font(pismo, "B", 9)
-        pdf.cell(90, 4, f" {cat_num_title}", border=0)
-        pdf.set_font(pismo, "", 8)
-        pdf.cell(20, 4, "Cena", align="R")
-        pdf.cell(40, 4, "ks/výk. - jednotlivé objekty", align="C")
-        pdf.cell(15, 4, "", align="R")
-        pdf.cell(25, 4, "CELKEM", align="R", ln=True)
+        pdf.set_fill_color(230, 230, 230)
+        pdf.cell(190, 6, f" {cat_num_title}", border=1, fill=True, ln=True)
         
-        pdf.cell(90, 4, "", border=0)
-        pdf.cell(20, 4, "bez DPH", align="R")
-        pdf.cell(8, 4, "1", align="R")
-        pdf.cell(8, 4, "2", align="R")
-        pdf.cell(8, 4, "3", align="R")
-        pdf.cell(8, 4, "4", align="R")
-        pdf.cell(8, 4, "5", align="R")
-        pdf.cell(15, 4, "ks/výk", align="R")
-        pdf.cell(25, 4, "Kč bez DPH", align="R", ln=True)
+        # Hlavička sloupců
+        pdf.set_font(pismo, "B", 8)
+        pdf.cell(90, 5, "Název položky", border=1, align="C")
+        pdf.cell(20, 5, "Cena", border=1, align="C")
+        pdf.cell(8, 5, "1", border=1, align="C")
+        pdf.cell(8, 5, "2", border=1, align="C")
+        pdf.cell(8, 5, "3", border=1, align="C")
+        pdf.cell(8, 5, "4", border=1, align="C")
+        pdf.cell(8, 5, "5", border=1, align="C")
+        pdf.cell(15, 5, "ks/výk", border=1, align="C")
+        pdf.cell(25, 5, "CELKEM (Kč)", border=1, align="C", ln=True)
 
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
@@ -516,25 +518,24 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             line_total = qty * price
             cat_total += line_total
             
-            name_disp = "  " + name[:60] + ("..." if len(name) > 60 else "")
-            pdf.cell(90, 5, name_disp)
-            pdf.cell(20, 5, fmt_price(price), align="R")
+            name_disp = " " + name[:60] + ("..." if len(name) > 60 else "")
             
-            pdf.cell(8, 5, fmt_q(q1), align="R")
-            pdf.cell(8, 5, fmt_q(q2), align="R")
-            pdf.cell(8, 5, fmt_q(q3), align="R")
-            pdf.cell(8, 5, fmt_q(q4), align="R")
-            pdf.cell(8, 5, fmt_q(q5), align="R")
+            # Podbarvení řádků pomocí 'B' (Bottom border)
+            pdf.cell(90, 5, name_disp, border="B")
+            pdf.cell(20, 5, fmt_price(price), border="B", align="R")
+            pdf.cell(8, 5, fmt_q(q1), border="B", align="C")
+            pdf.cell(8, 5, fmt_q(q2), border="B", align="C")
+            pdf.cell(8, 5, fmt_q(q3), border="B", align="C")
+            pdf.cell(8, 5, fmt_q(q4), border="B", align="C")
+            pdf.cell(8, 5, fmt_q(q5), border="B", align="C")
+            pdf.cell(15, 5, fmt_q(qty), border="B", align="C")
+            pdf.cell(25, 5, fmt_tot(line_total), border="B", align="R", ln=True)
             
-            pdf.cell(15, 5, fmt_q(qty), align="R")
-            pdf.cell(25, 5, fmt_tot(line_total), align="R", ln=True)
-            
-        pdf.ln(1)
         pdf.set_font(pismo, "B", 9)
         nazev_celkem = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
-        pdf.cell(165, 5, f"C E L K E M   {nazev_celkem}", align="R")
-        pdf.cell(25, 5, fmt_tot(cat_total), align="R", ln=True)
-        pdf.ln(3)
+        pdf.cell(165, 6, f"C E L K E M   {nazev_celkem}", border=1, align="R")
+        pdf.cell(25, 6, fmt_tot(cat_total), border=1, align="R", ln=True)
+        pdf.ln(4)
         return cat_total
 
     total_sum = 0.0
@@ -549,12 +550,14 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     total_sum += draw_category("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND", ["ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Zboží"])
     total_sum += draw_category("5. OSTATNÍ A OZO", ["Ostatni", "OZO"])
 
-    pdf.ln(4)
     pdf.set_font(pismo, "B", 10)
-    pdf.cell(165, 6, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", align="R")
-    pdf.cell(25, 6, f"{fmt_tot(total_sum)} Kč", align="R", ln=True)
-    pdf.ln(12)
+    pdf.cell(165, 8, "C E L K E M   K   Ú H R A D Ě   B E Z   D P H", border=1, align="R")
+    pdf.cell(25, 8, f"{fmt_tot(total_sum)} Kč", border=1, align="R", ln=True)
+    pdf.ln(10)
 
+    # ----------------------------------------------
+    # PATIČKA - ODBĚRATEL A MAPA OBJEKTŮ
+    # ----------------------------------------------
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
     dic = get_safe_str(zakaznik, 'DIC')
@@ -576,39 +579,44 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     ps = get_safe_str(zakaznik, "PSC")
     adr_line2 = f"{ps} {ob}".strip()
 
-    objekty_list = [o.strip() for o in objekty.split('\n') if o.strip()]
-    while len(objekty_list) < 4: objekty_list.append("") 
+    # Vykreslení velkého rámečku pro patičku
+    y_foot = pdf.get_y()
+    pdf.rect(10, y_foot, 190, 35)
+    pdf.set_xy(12, y_foot + 2)
 
     pdf.set_font(pismo, "B", 9)
-    pdf.cell(70, 5, "Odběratel:", ln=False)
-    pdf.cell(75, 5, "Umístění kontrolovaných HP/PV v objektech:", ln=False)
-    pdf.cell(45, 5, "Potvrzení reviz.technika:", ln=True)
+    pdf.cell(70, 5, "Odběratel:", border=0, ln=False)
+    pdf.cell(70, 5, "Umístění kontrolovaných HP/PV v objektech:", border=0, ln=False)
+    pdf.cell(46, 5, "Potvrzení reviz.technika:", border=0, ln=True)
 
     pdf.set_font(pismo, "", 9)
-    pdf.cell(70, 5, firma[:40], ln=False)
-    pdf.cell(75, 5, objekty_list[0], ln=False)
-    pdf.cell(45, 5, "", ln=True)
     
-    pdf.cell(70, 5, adr_line1[:40], ln=False)
-    pdf.cell(75, 5, objekty_list[1], ln=False)
-    pdf.cell(45, 5, "Datum:", ln=True)
+    o1_str = f"1: {objekty_map.get(1, '')}" if objekty_map.get(1) else ""
+    pdf.cell(70, 5, firma[:38], ln=False)
+    pdf.cell(70, 5, o1_str[:38], ln=False)
+    pdf.cell(46, 5, "", ln=True)
     
-    pdf.cell(70, 5, adr_line2[:40], ln=False)
-    pdf.cell(75, 5, objekty_list[2], ln=False)
-    pdf.cell(45, 5, f"{datetime.date.today().strftime('%d.%m.%Y')}", ln=True)
+    o2_str = f"2: {objekty_map.get(2, '')}" if objekty_map.get(2) else ""
+    pdf.cell(70, 5, adr_line1[:38], ln=False)
+    pdf.cell(70, 5, o2_str[:38], ln=False)
+    pdf.cell(46, 5, "Datum:", ln=True)
     
-    pdf.cell(70, 5, f"IČO: {ico}  DIČ: {dic}", ln=False)
-    pdf.cell(75, 5, objekty_list[3], ln=False)
-    pdf.cell(45, 5, ".............................................", ln=True)
+    o3_str = f"3: {objekty_map.get(3, '')}" if objekty_map.get(3) else ""
+    pdf.cell(70, 5, adr_line2[:38], ln=False)
+    pdf.cell(70, 5, o3_str[:38], ln=False)
+    pdf.cell(46, 5, f"{datetime.date.today().strftime('%d.%m.%Y')}", ln=True)
     
-    if len(objekty_list) > 4:
-        for obj in objekty_list[4:]:
-            if obj:
-                pdf.cell(70, 5, "", ln=False) 
-                pdf.cell(75, 5, obj, ln=False)
-                pdf.cell(45, 5, "", ln=True)
+    o4_str = f"4: {objekty_map.get(4, '')}" if objekty_map.get(4) else ""
+    pdf.cell(70, 5, f"IČO: {ico}   DIČ: {dic}"[:38], ln=False)
+    pdf.cell(70, 5, o4_str[:38], ln=False)
+    pdf.cell(46, 5, "..........................................", ln=True)
+    
+    o5_str = f"5: {objekty_map.get(5, '')}" if objekty_map.get(5) else ""
+    pdf.cell(70, 5, "", ln=False)
+    pdf.cell(70, 5, o5_str[:38], ln=False)
+    pdf.cell(46, 5, "", ln=True)
             
-    pdf.ln(10)
+    pdf.set_xy(10, y_foot + 40)
 
     pdf.set_font(pismo, "", 7)
     note1 = "Poznámka:  HP - SHODNÝ  - splňuje veškeré podmínky stanovené odbornými pokyny výrobce,  HP - NESHODNÝ  - nesplňuje podmínky stanovené odbornými pokyny "
@@ -625,7 +633,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 29.0 Evidence Core / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 30.0 Table Master / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -636,7 +644,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v29.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v30.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -644,7 +652,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px; }
     .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; font-weight: bold; }
     .cart-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ff4b4b; margin-top: 15px; }
-    .evidence-box { border: 2px solid #28a745; padding: 15px; border-radius: 8px; margin-bottom: 20px;}
+    .evidence-box { border: 2px solid #28a745; padding: 15px; border-radius: 8px; margin-bottom: 20px; background-color: #f9fff9;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -679,6 +687,9 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         technik = st.text_input("Jméno reviz. technika:", value="v.z. Tomáš Urbánek")
         st.divider()
         
+        aktualni_ico = ""
+        ulozene_objekty = []
+        
         if df_customers is not None:
             filt = df_customers.copy()
             filt["FIRMA"] = filt["FIRMA"].fillna("Neznámý název")
@@ -712,25 +723,17 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                         local_data = build_form_data_from_customer(ico_val)
                         if local_data: curr.update(local_data)
                     st.session_state.vybrany_zakaznik = curr.copy()
+                    
+                aktualni_ico = clean_ico(curr.get("ICO"))
+                ulozene_objekty = get_objects_from_db(aktualni_ico)
             else: st.warning("Nenalezeno.")
 
-        st.subheader("🏢 Umístění v objektech")
-        objekty_text = ""
-        ulozene_objekty = []
-        aktualni_ico = ""
-        
-        if st.session_state.vybrany_zakaznik:
-            aktualni_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO"))
-            ulozene_objekty = get_objects_from_db(aktualni_ico)
-            
-            if ulozene_objekty:
-                vybrane_objekty = st.multiselect("Vyberte objekty z paměti pro tisk DL:", options=ulozene_objekty, default=[])
-                objekty_text = "\n".join(vybrane_objekty)
-                
+        st.subheader("🏢 Správa objektů v DB")
+        if aktualni_ico:
             with st.expander("➕ Přidat nový objekt k zákazníkovi"):
                 with st.form("add_obj_form", clear_on_submit=True):
                     novy_objekt = st.text_input("Název objektu")
-                    if st.form_submit_button("Uložit"):
+                    if st.form_submit_button("Uložit do paměti"):
                         if novy_objekt.strip():
                             add_object_to_db(aktualni_ico, novy_objekt)
                             st.rerun()
@@ -750,16 +753,29 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 29.0 Evidence Core | Přidána kompletní Zpráva o kontrole HP přímo do tabulky")
+    st.caption("Verze 30.0 Table Master | Profesionálně formátované tabulky v PDF + Spárování objektů")
 
-    st.markdown("### ⚙️ Zobrazit sloupce objektů pro Fakturaci (Ano/Ne)")
+    st.markdown("### 🏢 Umístění a rozřazení objektů (O1 - O5)")
+    st.info("Zvolte si, pro jaké objekty nyní tvoříte Dodací list. Tyto objekty se v PDF propíšou pod čísly 1 až 5. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-`.")
     
-    col_cb1, col_cb2, col_cb3, col_cb4, col_cb5 = st.columns(5)
-    with col_cb1: show_o1 = st.checkbox("✅ Objekt 1 (O1)", value=True)
-    with col_cb2: show_o2 = st.checkbox("✅ Objekt 2 (O2)", value=False)
-    with col_cb3: show_o3 = st.checkbox("✅ Objekt 3 (O3)", value=False)
-    with col_cb4: show_o4 = st.checkbox("✅ Objekt 4 (O4)", value=False)
-    with col_cb5: show_o5 = st.checkbox("✅ Objekt 5 (O5)", value=False)
+    col_o1, col_o2, col_o3, col_o4, col_o5 = st.columns(5)
+    with col_o1: 
+        show_o1 = st.checkbox("✅ Sloupec 1 (O1)", value=True)
+        o1_name = st.selectbox("Objekt 1:", [""] + ulozene_objekty, key="o1_sel") if show_o1 else ""
+    with col_o2: 
+        show_o2 = st.checkbox("✅ Sloupec 2 (O2)", value=False)
+        o2_name = st.selectbox("Objekt 2:", [""] + ulozene_objekty, key="o2_sel") if show_o2 else ""
+    with col_o3: 
+        show_o3 = st.checkbox("✅ Sloupec 3 (O3)", value=False)
+        o3_name = st.selectbox("Objekt 3:", [""] + ulozene_objekty, key="o3_sel") if show_o3 else ""
+    with col_o4: 
+        show_o4 = st.checkbox("✅ Sloupec 4 (O4)", value=False)
+        o4_name = st.selectbox("Objekt 4:", [""] + ulozene_objekty, key="o4_sel") if show_o4 else ""
+    with col_o5: 
+        show_o5 = st.checkbox("✅ Sloupec 5 (O5)", value=False)
+        o5_name = st.selectbox("Objekt 5:", [""] + ulozene_objekty, key="o5_sel") if show_o5 else ""
+        
+    mapa_objektu_pro_pdf = {1: o1_name, 2: o2_name, 3: o3_name, 4: o4_name, 5: o5_name}
     st.divider()
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
@@ -818,33 +834,39 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         }
 
     with tabs[0]:
-        # --- 1. MODUL EVIDENCE HP (NOVÉ) ---
         st.markdown("<div class='evidence-box'>", unsafe_allow_html=True)
         st.markdown("### 📋 Zpráva o kontrole HP (Evidence přístrojů)")
         
         if not st.session_state.vybrany_zakaznik:
             st.info("Zvolte odběratele v levém panelu, aby se otevřela evidence jeho přístrojů.")
         else:
-            conn = sqlite3.connect(DB_PATH)
-            # Načtení stávající evidence pro tohoto zákazníka
-            df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, objekt, misto, do_opravy, do_skladu FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
-            if df_evid.empty:
-                # Vytvoření prázdného DataFrame se správnými sloupci pro nový zápis
-                df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "objekt", "misto", "do_opravy", "do_skladu"])
+            if st.session_state.loaded_ico != aktualni_ico:
+                conn = sqlite3.connect(DB_PATH)
+                df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, objekt, misto, do_opravy, do_skladu FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
+                if df_evid.empty:
+                    df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "objekt", "misto", "do_opravy", "do_skladu"])
+                else:
+                    df_evid["do_opravy"] = df_evid["do_opravy"].astype(bool)
+                    df_evid["do_skladu"] = df_evid["do_skladu"].astype(bool)
+                
+                st.session_state.evidence_df = df_evid
+                st.session_state.loaded_ico = aktualni_ico
+                conn.close()
             
             st.caption("Vyplňte seznam kontrolovaných přístrojů. Funguje to jako Excel - můžete přidávat řádky donekonečna.")
             
             edited_evid = st.data_editor(
-                df_evid,
+                st.session_state.evidence_df,
                 num_rows="dynamic",
                 use_container_width=True,
+                key="evidence_editor_safe",
                 column_config={
                     "druh": st.column_config.SelectboxColumn("Druh", options=["přenosný", "pojízdný", "přívěsný", "AHS"], width="small"),
                     "typ_hp": st.column_config.TextColumn("Typ HP", width="medium"),
                     "vyr_cislo": st.column_config.TextColumn("Výr. číslo", width="small"),
-                    "rok_vyr": st.column_config.NumberColumn("Rok výr.", format="%d", width="small"),
+                    "rok_vyr": st.column_config.NumberColumn("Rok výr.", format="%d", min_value=1900, max_value=2100, width="small"),
                     "mesic_vyr": st.column_config.NumberColumn("Měs.", min_value=1, max_value=12, width="small"),
-                    "tlak_rok": st.column_config.NumberColumn("Rok tlak.", format="%d", width="small"),
+                    "tlak_rok": st.column_config.NumberColumn("Rok tlak.", format="%d", min_value=1900, max_value=2100, width="small"),
                     "tlak_mesic": st.column_config.NumberColumn("Měs.", min_value=1, max_value=12, width="small"),
                     "stav": st.column_config.SelectboxColumn("Stav", options=["S", "NO", "NOPZ", "CH", "S-nový", "NV"], width="small"),
                     "objekt": st.column_config.SelectboxColumn("Objekt", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
@@ -854,17 +876,23 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                 }
             )
             
-            if st.button("💾 Uložit Zprávu o kontrole do Databáze zákazníka"):
-                # Vyčistit a zapsat
-                edited_evid = edited_evid.dropna(how='all') # Odstranit prázdné řádky
-                edited_evid["ico"] = aktualni_ico
-                conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
-                edited_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
-                st.success("Evidence přístrojů byla úspěšně uložena!")
-            conn.close()
+            if st.button("💾 Uložit Zprávu o kontrole do Databáze zákazníka", type="primary"):
+                clean_evid = edited_evid.dropna(how='all').copy()
+                clean_evid["do_opravy"] = clean_evid["do_opravy"].fillna(False).astype(int)
+                clean_evid["do_skladu"] = clean_evid["do_skladu"].fillna(False).astype(int)
+                clean_evid["ico"] = aktualni_ico
+                
+                conn = sqlite3.connect(DB_PATH)
+                cur = conn.cursor()
+                cur.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
+                conn.commit()  
+                clean_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
+                conn.close()
+                st.session_state.evidence_df = edited_evid
+                st.success("Evidence přístrojů byla úspěšně uložena! Můžete pokračovat níže tvorbou Dodacího listu.")
+                
         st.markdown("</div>", unsafe_allow_html=True)
         
-        # --- 2. MODUL FAKTURACE HP ---
         st.markdown("### 💰 Fakturace úkonů (Dodací list)")
         render_table_header()
         item_row("HP", "Kontrola HP (shodný)", 29.40, "h1")
@@ -1015,7 +1043,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                         st.error("Vyberte zákazníka!")
                     else:
                         pdf_doc = create_wservis_dl(
-                            st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, objekty_text, typ_dl, st.session_state.vyrazene_kody
+                            st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, st.session_state.vyrazene_kody
                         )
                         if pdf_doc:
                             st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
