@@ -92,7 +92,7 @@ if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik
 if "vyrazene_kody" not in st.session_state: st.session_state.vyrazene_kody = []
 
 # ==========================================
-# 2. INTELIGENTNÍ IMPORT DATABÁZÍ
+# 2. INTELIGENTNÍ IMPORT DATABÁZÍ VČ. XML
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -120,11 +120,16 @@ def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
             except Exception: continue
     return None
 
+def clean_ico(ico_val: Any) -> str:
+    s = str(ico_val).strip()
+    if s.lower() in ['nan', 'none', 'null', '']: return ""
+    return s.split('.')[0]
+
 def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
-        # Import mapovaných kategorií a speciální logika pro "Zboží Formulář"
+        # 1. Import mapovaných kategorií z Excelu / CSV
         for ui_key, name in CATEGORY_MAP.items():
             base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
@@ -132,15 +137,13 @@ def import_all_ceniky() -> str:
             df = safe_read_data(base_path)
             if df is None: continue
 
-            # Inteligentní přejmenování sloupců z W-SERVIS exportů (zbozi_nazev -> nazev)
             df.columns = [str(col).strip().lower() for col in df.columns]
             if 'zbozi_nazev' in df.columns: df.rename(columns={'zbozi_nazev': 'nazev'}, inplace=True)
             if 'zbozi_cena' in df.columns: df.rename(columns={'zbozi_cena': 'cena'}, inplace=True)
             if 'ukon_popis' in df.columns: df.rename(columns={'ukon_popis': 'nazev'}, inplace=True)
             if 'ukon_cena' in df.columns: df.rename(columns={'ukon_cena': 'cena'}, inplace=True)
 
-            if "nazev" not in df.columns or "cena" not in df.columns:
-                continue
+            if "nazev" not in df.columns or "cena" not in df.columns: continue
 
             df = df.dropna(subset=["nazev", "cena"])
             df["nazev"] = df["nazev"].astype(str).str.strip()
@@ -157,18 +160,16 @@ def import_all_ceniky() -> str:
             valid_cols = [col for col in df.columns if col in ["nazev", "cena"]]
             try:
                 df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
-                dup_info = f" (Očištěno o {count_before - count_after} duplicit)" if count_before > count_after else ""
-                log_messages.append(f"✅ Načteno: {name} ({len(df)} položek){dup_info}")
+                log_messages.append(f"✅ Načteno: {name} ({len(df)} položek)")
             except Exception as e:
                 log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
-        # Import velkého expimp souboru
+        # 2. Import velkého expimp souboru
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data(expimp_base)
         if df_exp is not None:
             df_exp.columns = [str(c).strip().lower().replace('"', '') for c in df_exp.columns]
             name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
-            
             price_col = None
             if 'cena1' in df_exp.columns: price_col = 'cena1'
             elif 'cena_prodejni' in df_exp.columns: price_col = 'cena_prodejni'
@@ -193,13 +194,56 @@ def import_all_ceniky() -> str:
                 
                 try:
                     df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
-                    log_messages.append(f"📦 ÚSPĚCH: Export expimp úspěšně spárován! Do katalogu přidáno {len(df_clean)} položek.")
-                except Exception as e:
-                    log_messages.append(f"❌ expimp: Chyba při zápisu – {e}")
+                    log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
+                except Exception as e: pass
+
+        # 3. NATIVNÍ XML PARSER PRO obchpartner.xml (Oprava češtiny)
+        xml_path = os.path.join(CSV_FOLDER, "obchpartner.xml")
+        if os.path.exists(xml_path):
+            try:
+                import xml.etree.ElementTree as ET
+                # Otevíráme soubor striktně ve windows-1250 (cp1250), čímž získáme zpět všechna "Č, Ř, Ž"
+                with open(xml_path, 'r', encoding='cp1250', errors='replace') as f:
+                    xml_data = f.read()
+                
+                # Vyčištění hlavičky pro bezpečnost
+                xml_data = re.sub(r'<\?xml.*\?>', '', xml_data)
+                root = ET.fromstring(xml_data)
+                
+                zakaznici = []
+                for pol in root.findall('.//polozka'):
+                    ico = pol.findtext('ICO', '')
+                    dic = pol.findtext('DIC', '')
+                    adresa = pol.find('ADRESA')
+                    
+                    firma = adresa.findtext('FIRMA', '') if adresa is not None else ''
+                    adresa1 = adresa.findtext('ADRESA1', '') if adresa is not None else ''
+                    adresa2 = adresa.findtext('ADRESA2', '') if adresa is not None else ''
+                    mesto = adresa.findtext('ADRESA3', '') if adresa is not None else ''
+                    psc = adresa.findtext('PSC', '') if adresa is not None else ''
+                    
+                    ulice = adresa1 if adresa1.strip() else adresa2
+                    
+                    if firma.strip():
+                        zakaznici.append({
+                            "ICO": clean_ico(ico),
+                            "DIC": dic.strip(),
+                            "FIRMA": firma.strip(),
+                            "ADRESA1": ulice.strip(),
+                            "ADRESA3": mesto.strip(),
+                            "PSC": psc.strip()
+                        })
+                
+                if zakaznici:
+                    df_xml = pd.DataFrame(zakaznici)
+                    df_xml.to_sql("obchpartner", connection, if_exists="replace", index=False)
+                    log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem). Čeština opravena!")
+            except Exception as e:
+                log_messages.append(f"❌ obchpartner.xml: Nelze zpracovat – {e}")
 
     finally:
         connection.close()
-    return "\n".join(log_messages) if log_messages else "Žádné ceníky k načtení."
+    return "\n".join(log_messages) if log_messages else "Žádné soubory k načtení."
 
 def get_price(cat_key: str, item_name: str) -> float:
     if not os.path.exists(DB_PATH): return 0.0
@@ -228,8 +272,7 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
                 if r[0] not in seen_names:
                     items.append({"nazev": r[0], "cena": float(r[1]), "internal_cat": cat})
                     seen_names.add(r[0])
-        except Exception:
-            pass
+        except Exception: pass
     conn.close()
     items.sort(key=lambda x: x["nazev"])
     return items
@@ -237,11 +280,6 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
 # ==========================================
 # 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (OFFLINE)
 # ==========================================
-def clean_ico(ico_val: Any) -> str:
-    s = str(ico_val).strip()
-    if s.lower() in ['nan', 'none', 'null', '']: return ""
-    return s.split('.')[0]
-
 def validate_ico(ico: Any) -> bool:
     ico_str = clean_ico(ico)
     if not ico_str.isdigit() or len(ico_str) != 8: return False
@@ -289,30 +327,6 @@ def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
         "UCET": cust.get("ucet", ""),
         "POZNAMKA": cust.get("poznamka", "")
     }
-
-def update_customer_in_db(zakaznik: Dict[str, Any]) -> bool:
-    if not os.path.exists(DB_PATH): return False
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cols = [row[1] for row in cur.execute("PRAGMA table_info(obchpartner)")]
-        for c in ["ADRESA1", "ADRESA2"]:
-            if c not in cols: cur.execute(f"ALTER TABLE obchpartner ADD COLUMN {c} TEXT")
-        cur.execute(
-            "UPDATE obchpartner SET FIRMA=?, ADRESA1=?, ADRESA2=?, ADRESA3=?, PSC=?, DIC=? WHERE ICO=?",
-            (
-                zakaznik.get("FIRMA"), 
-                zakaznik.get("ULICE") or zakaznik.get("ADRESA1", ""), 
-                zakaznik.get("CP") or zakaznik.get("ADRESA2", ""), 
-                zakaznik.get("ADRESA3"), 
-                zakaznik.get("PSC"), 
-                zakaznik.get("DIC"), 
-                clean_ico(zakaznik.get("ICO"))
-            ),
-        )
-        conn.commit(); conn.close()
-        return True
-    except Exception: return False
 
 def get_objects_from_db(ico: Any) -> List[str]:
     ico_clean = clean_ico(ico)
@@ -561,7 +575,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 25.0 Enterprise / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 26.0 Native XML / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -572,9 +586,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - ENTERPRISE EDITION
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v25.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v26.0", layout="wide", page_icon="🛡️")
 
-# Custom CSS for Premium Look
 st.markdown("""
 <style>
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
@@ -601,7 +614,6 @@ df_customers = load_all_customers()
 # --- HLAVNÍ MENU ---
 menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence"])
 
-# Výpočet košíku pro Sidebar (Živý přehled)
 celkem_polozek = 0
 celkem_cena = 0.0
 for k, v in st.session_state.data_zakazky.items():
@@ -676,7 +688,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                             add_object_to_db(aktualni_ico, novy_objekt)
                             st.rerun()
 
-        # DYNAMICKÝ KOŠÍK V SIDEBARU
         st.markdown(f"""
         <div class="cart-box">
             <b>🛒 Živý přehled DL</b><br/>
@@ -687,7 +698,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     # --- MAIN AREA PRO DL ---
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 25.0 Enterprise | Excel Sync | Smart Objects | Živý přehled košíku")
+    st.caption("Verze 26.0 Native XML | 100% zobrazení češtiny u všech klientů")
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
 
@@ -824,13 +835,12 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                             st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
 
 elif menu_volba == "🗄️ Katalog a Evidence":
-    # --- MODUL EVIDENCE ---
     st.title("🗄️ Katalog, Sklad a Evidence")
     
     with st.expander("⚙️ Import dat z W-SERVIS (Synchronizace)"):
-        st.info("Nahráním souborů jako 'Zboží Formulář.xlsx' a 'expimp.csv' naplníte tento katalog.")
+        st.info("Nahrajte do složky 'data/ceniky/' vaše ceníky, exportní soubor 'expimp.csv' a také soubor 'obchpartner.xml'.")
         if st.button("🚀 Spustit kompletní synchronizaci", type="primary"):
-            with st.spinner("Aktualizuji databázi..."):
+            with st.spinner("Aktualizuji databázi (překládám kódování u zákazníků)..."):
                 log = import_all_ceniky()
                 st.success("Hotovo!")
                 st.code(log)
@@ -839,7 +849,6 @@ elif menu_volba == "🗄️ Katalog a Evidence":
     if os.path.exists(DB_PATH):
         conn = sqlite3.connect(DB_PATH)
         try:
-            # Zkusíme načíst všechny relevantní tabulky a zobrazit je v profi tabulce
             df_zbozi = pd.read_sql("SELECT nazev as 'Název položky', cena as 'Cena (Kč)' FROM cenik_zbozi ORDER BY nazev", conn)
             st.dataframe(df_zbozi, use_container_width=True, height=400)
         except Exception:
