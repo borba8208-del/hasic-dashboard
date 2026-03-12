@@ -534,8 +534,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(40, 6, s(technik), border=1, align="C", ln=True)
     pdf.ln(8)
 
-    w_name, w_cena, w_col, w_ks, w_celk = 85, 17, 8, 15, 33
-
+    # BEZPEČNOSTNÍ OPRAVA: Pevně vepsané šířky sloupců. Zabrání to chybě "NameError"
     def draw_category(cat_num_title: str, item_cats: List[str]):
         cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v.get("q", 0) > 0]
         if not cat_items: return 0.0
@@ -546,15 +545,15 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         
         pdf.set_fill_color(240, 240, 240)
         pdf.set_font(p, "B", 8)
-        pdf.cell(w_name, 5, s(" Název položky"), border=1, fill=True)
-        pdf.cell(w_cena, 5, s("Cena/ks"), border=1, align="C", fill=True)
-        pdf.cell(w_col, 5, "O1", border=1, align="C", fill=True)
-        pdf.cell(w_col, 5, "O2", border=1, align="C", fill=True)
-        pdf.cell(w_col, 5, "O3", border=1, align="C", fill=True)
-        pdf.cell(w_col, 5, "O4", border=1, align="C", fill=True)
-        pdf.cell(w_col, 5, "O5", border=1, align="C", fill=True)
-        pdf.cell(w_ks, 5, s("ks/výk"), border=1, align="C", fill=True)
-        pdf.cell(w_celk, 5, s("CELKEM (Kč)"), border=1, align="C", fill=True, ln=True)
+        pdf.cell(85, 5, s(" Název položky"), border=1, fill=True)
+        pdf.cell(17, 5, s("Cena/ks"), border=1, align="C", fill=True)
+        pdf.cell(8, 5, "O1", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "O2", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "O3", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "O4", border=1, align="C", fill=True)
+        pdf.cell(8, 5, "O5", border=1, align="C", fill=True)
+        pdf.cell(15, 5, s("ks/výk"), border=1, align="C", fill=True)
+        pdf.cell(33, 5, s("CELKEM (Kč)"), border=1, align="C", fill=True, ln=True)
 
         cat_total = 0.0
         pdf.set_font(p, "", 9)
@@ -567,22 +566,22 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             clean_name = s(name)
             name_disp = " " + clean_name[:48] + ("..." if len(clean_name) > 48 else "")
             
-            pdf.cell(w_name, 6, name_disp, border=1)
-            pdf.cell(w_cena, 6, s(fmt_price(price)), border=1, align="R")
-            pdf.cell(w_col, 6, s(fmt_q(vals.get("q1", 0))), border=1, align="C")
-            pdf.cell(w_col, 6, s(fmt_q(vals.get("q2", 0))), border=1, align="C")
-            pdf.cell(w_col, 6, s(fmt_q(vals.get("q3", 0))), border=1, align="C")
-            pdf.cell(w_col, 6, s(fmt_q(vals.get("q4", 0))), border=1, align="C")
-            pdf.cell(w_col, 6, s(fmt_q(vals.get("q5", 0))), border=1, align="C")
-            pdf.cell(w_ks, 6, s(fmt_q(qty)), border=1, align="C")
-            pdf.cell(w_celk, 6, s(fmt_tot(line_total)), border=1, align="R", ln=True)
+            pdf.cell(85, 6, name_disp, border=1)
+            pdf.cell(17, 6, s(fmt_price(price)), border=1, align="R")
+            pdf.cell(8, 6, s(fmt_q(vals.get("q1", 0))), border=1, align="C")
+            pdf.cell(8, 6, s(fmt_q(vals.get("q2", 0))), border=1, align="C")
+            pdf.cell(8, 6, s(fmt_q(vals.get("q3", 0))), border=1, align="C")
+            pdf.cell(8, 6, s(fmt_q(vals.get("q4", 0))), border=1, align="C")
+            pdf.cell(8, 6, s(fmt_q(vals.get("q5", 0))), border=1, align="C")
+            pdf.cell(15, 6, s(fmt_q(qty)), border=1, align="C")
+            pdf.cell(33, 6, s(fmt_tot(line_total)), border=1, align="R", ln=True)
             
         pdf.set_font(p, "B", 9)
         pdf.set_fill_color(245, 245, 245)
         n_c = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
         
-        pdf.cell(w_name + w_cena + (5*w_col) + w_ks, 6, s(f"CELKEM za {n_c}: "), border=1, align="R", fill=True)
-        pdf.cell(w_celk, 6, s(fmt_tot(cat_total)), border=1, align="R", fill=True, ln=True)
+        pdf.cell(157, 6, s(f"CELKEM za {n_c}: "), border=1, align="R", fill=True)
+        pdf.cell(33, 6, s(fmt_tot(cat_total)), border=1, align="R", fill=True, ln=True)
         pdf.ln(4)
         return cat_total
 
