@@ -405,63 +405,41 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
     except Exception: return False
 
 def setup_pdf_fonts(pdf: FPDF) -> bool:
-    """NEZNIČITELNÁ inicializace českých fontů. Žádné ořezávání háčků."""
-    # 1. Zkusí nalézt lokální Windows fonty (pokud je uživatel dodá)
-    if os.path.exists("arial.ttf") and os.path.exists("arialbd.ttf"):
-        pdf.add_font("DejaVu", "", "arial.ttf", uni=True)
-        pdf.add_font("DejaVu", "B", "arialbd.ttf", uni=True)
-        return True
-        
-    # 2. Zkusí systémové cesty v Linuxu / cloudu
-    linux_fonts = [
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
-        ("/usr/share/fonts/truetype/freefont/FreeSans.ttf", "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf")
+    """
+    NEKOMPROMISNÍ INICIALIZACE FONTŮ: 
+    Spoléhá striktně na lokální soubory arial.ttf a arialbd.ttf,
+    které musí být uloženy ve stejné složce jako tento skript.
+    """
+    font_files = [
+        ("arial.ttf", "arialbd.ttf"),
+        ("ARIAL.TTF", "ARIALBD.TTF"),
+        ("Arial.ttf", "Arialbd.ttf")
     ]
-    for reg, bld in linux_fonts:
-        if os.path.exists(reg) and os.path.exists(bld):
-            pdf.add_font("DejaVu", "", reg, uni=True)
-            pdf.add_font("DejaVu", "B", bld, uni=True)
-            return True
-
-    # 3. Agresivní stažení
-    try:
-        import requests
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        urls = {
-            "dejavu.ttf": "https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans.ttf",
-            "dejavu-bold.ttf": "https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans-Bold.ttf"
-        }
-        for filename, url in urls.items():
-            if not os.path.exists(filename) or os.path.getsize(filename) < 10000:
-                r = requests.get(url, headers=headers, timeout=15)
-                if r.status_code == 200:
-                    with open(filename, 'wb') as f:
-                        f.write(r.content)
-                        
-        if os.path.exists("dejavu.ttf") and os.path.exists("dejavu-bold.ttf"):
-            pdf.add_font("DejaVu", "", "dejavu.ttf", uni=True)
-            pdf.add_font("DejaVu", "B", "dejavu-bold.ttf", uni=True)
-            return True
-    except Exception:
-        pass
-        
+    
+    for reg_font, bold_font in font_files:
+        if os.path.exists(reg_font) and os.path.exists(bold_font):
+            try:
+                pdf.add_font("ArialCZ", "", reg_font, uni=True)
+                pdf.add_font("ArialCZ", "B", bold_font, uni=True)
+                return True
+            except Exception:
+                pass
     return False
 
 # ==========================================
-# 4. PDF ENGINE (ABSOLUTNÍ GEOMETRIE A ČEŠTINA)
+# 4. PDF ENGINE (ABSOLUTNÍ GEOMETRIE A LOKÁLNÍ ČEŠTINA)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
         super().__init__()
         self.pismo_ok = setup_pdf_fonts(self)
         if self.pismo_ok:
-            self.pismo_name = "DejaVu"
+            self.pismo_name = "ArialCZ"
         else:
-            self.pismo_name = "helvetica" # Jen fallback pro zamezení úplného pádu
+            self.pismo_name = "helvetica" # Pouze fallback v případě naprosté nouze
 
     def header(self) -> None:
-        if not self.pismo_ok: return # Hlavičku nevykreslujeme, pokud nemáme font
+        if not self.pismo_ok: return 
         
         self.set_font(self.pismo_name, "B", 12)
         if os.path.exists("logo.png"):
@@ -491,9 +469,8 @@ class UrbaneKPDF(FPDF):
 def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_number: str, zakazka: str, technik: str, objekty_map: Dict[int, str], typ_dl: str, vyrazene_kody: List[str]) -> tuple[Optional[bytes], Optional[str]]:
     pdf = UrbaneKPDF()
     
-    # Pokud zklamalo načtení fontu, VRÁTÍME CHYBU, MÍSTO ABYCHOM OŘEZÁVALI ČEŠTINU
     if not pdf.pismo_ok:
-        return None, "Cloudový server odmítl stáhnout české písmo. Stáhněte si soubory 'arial.ttf' a 'arialbd.ttf' a vložte je k aplikaci do složky."
+        return None, "CHYBA FONTU: Vložte soubory 'arial.ttf' a 'arialbd.ttf' do stejné složky jako aplikaci (Dashboard), aby bylo možné generovat české znaky!"
         
     try:
         p = pdf.pismo_name
@@ -702,7 +679,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
         pdf.set_font(p, "", 7)
         pdf.set_xy(10, y_sig + 21)
-        pdf.cell(95, 5, "   Podpisy a razítka zhotovitele", border="R")
+        pdf.cell(95, 5, "   Podpis a razítko zhotovitele", border="R")
         pdf.cell(95, 5, "   Podpis a razítko odběratele")
 
         pdf.set_y(y_sig + 28)
@@ -719,7 +696,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
                 pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
         pdf.ln(3)
-        wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 38.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+        wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 39.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
         pdf.set_font(p, "", 6)
         pdf.cell(0, 4, wservis_stamp, ln=True)
 
@@ -731,7 +708,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v38.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v39.0", layout="wide", page_icon="🛡️")
 
 # Zobrazení nezaseknutého dlouhého textu u firem v roletce
 st.markdown("""
@@ -861,7 +838,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 38.0 Indestructible Core | Bezpečné fonty, přesná geometrie a správná terminologie")
+    st.caption("Verze 39.0 Local Font Absolute | Striktní čeština a milimetrová geometrie")
 
     st.markdown("### 🏢 Umístění a rozřazení objektů (O1 - O5)")
     st.info("Zvolte si, pro jaké objekty nyní tvoříte Dodací list. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-`.")
@@ -1149,7 +1126,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                 if not st.session_state.vybrany_zakaznik:
                     st.error("Nejprve vyberte zákazníka v levém panelu!")
                 else:
-                    # Dynamické generování PDF bez mezikroku
                     pdf_bytes, error_msg = create_wservis_dl(
                         st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, st.session_state.vyrazene_kody
                     )
