@@ -49,7 +49,7 @@ CATEGORY_MAP: Dict[str, str] = {
 }
 
 # ==========================================
-# 1. KONFIGURACE FIRMY
+# 1. KONFIGURACE FIRMY A DB
 # ==========================================
 FIRMA_VLASTNI: Dict[str, Any] = {
     "název": "Ilja Urbánek HASIČ - SERVIS",
@@ -72,6 +72,7 @@ def init_db():
     open(DB_PATH, 'a').close()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    # Tabulka pro objekty zákazníků
     cur.execute("""
         CREATE TABLE IF NOT EXISTS objekty (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,18 +81,38 @@ def init_db():
             UNIQUE(ico, nazev_objektu)
         )
     """)
+    # NOVÁ TABULKA: Přesná kopie Access formuláře pro evidenci HP
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS evidence_hp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ico TEXT NOT NULL,
+            druh TEXT,
+            typ_hp TEXT,
+            vyr_cislo TEXT,
+            rok_vyr INTEGER,
+            mesic_vyr INTEGER,
+            tlak_rok INTEGER,
+            tlak_mesic INTEGER,
+            stav TEXT,
+            objekt TEXT,
+            misto TEXT,
+            do_opravy INTEGER DEFAULT 0,
+            do_skladu INTEGER DEFAULT 0
+        )
+    """)
     conn.commit()
     conn.close()
 
 init_db()
 
+# Paměť stavu
 if "data_zakazky" not in st.session_state: st.session_state.data_zakazky = {}
 if "dynamic_items" not in st.session_state: st.session_state.dynamic_items = {}
 if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik = None
 if "vyrazene_kody" not in st.session_state: st.session_state.vyrazene_kody = []
 
 # ==========================================
-# 2. INTELIGENTNÍ IMPORT DATABÁZÍ VČ. XML
+# 2. INTELIGENTNÍ IMPORT DATABÁZÍ
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -198,40 +219,48 @@ def import_all_ceniky() -> str:
         if os.path.exists(xml_path):
             try:
                 import xml.etree.ElementTree as ET
-                with open(xml_path, 'r', encoding='cp1250', errors='replace') as f:
-                    xml_data = f.read()
+                xml_data = None
                 
-                xml_data = re.sub(r'<\?xml.*\?>', '', xml_data)
-                root = ET.fromstring(xml_data)
+                for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
+                    try:
+                        with open(xml_path, 'r', encoding=enc) as f:
+                            xml_data = f.read()
+                        break
+                    except UnicodeDecodeError:
+                        continue
                 
-                zakaznici = []
-                for pol in root.findall('.//polozka'):
-                    ico = pol.findtext('ICO', '')
-                    dic = pol.findtext('DIC', '')
-                    adresa = pol.find('ADRESA')
+                if xml_data:
+                    xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
+                    root = ET.fromstring(xml_data)
                     
-                    firma = adresa.findtext('FIRMA', '') if adresa is not None else ''
-                    adresa1 = adresa.findtext('ADRESA1', '') if adresa is not None else ''
-                    adresa2 = adresa.findtext('ADRESA2', '') if adresa is not None else ''
-                    mesto = adresa.findtext('ADRESA3', '') if adresa is not None else ''
-                    psc = adresa.findtext('PSC', '') if adresa is not None else ''
+                    zakaznici = []
+                    for pol in root.findall('.//polozka'):
+                        ico = pol.findtext('ICO', '')
+                        dic = pol.findtext('DIC', '')
+                        adresa = pol.find('ADRESA')
+                        
+                        firma = adresa.findtext('FIRMA', '') if adresa is not None else ''
+                        adresa1 = adresa.findtext('ADRESA1', '') if adresa is not None else ''
+                        adresa2 = adresa.findtext('ADRESA2', '') if adresa is not None else ''
+                        mesto = adresa.findtext('ADRESA3', '') if adresa is not None else ''
+                        psc = adresa.findtext('PSC', '') if adresa is not None else ''
+                        
+                        ulice = adresa1 if adresa1.strip() else adresa2
+                        
+                        if firma.strip():
+                            zakaznici.append({
+                                "ICO": clean_ico(ico),
+                                "DIC": dic.strip(),
+                                "FIRMA": firma.strip(),
+                                "ADRESA1": ulice.strip(),
+                                "ADRESA3": mesto.strip(),
+                                "PSC": psc.strip()
+                            })
                     
-                    ulice = adresa1 if adresa1.strip() else adresa2
-                    
-                    if firma.strip():
-                        zakaznici.append({
-                            "ICO": clean_ico(ico),
-                            "DIC": dic.strip(),
-                            "FIRMA": firma.strip(),
-                            "ADRESA1": ulice.strip(),
-                            "ADRESA3": mesto.strip(),
-                            "PSC": psc.strip()
-                        })
-                
-                if zakaznici:
-                    df_xml = pd.DataFrame(zakaznici)
-                    df_xml.to_sql("obchpartner", connection, if_exists="replace", index=False)
-                    log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem).")
+                    if zakaznici:
+                        df_xml = pd.DataFrame(zakaznici)
+                        df_xml.to_sql("obchpartner", connection, if_exists="replace", index=False)
+                        log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem). Čeština opravena!")
             except Exception as e:
                 log_messages.append(f"❌ obchpartner.xml: Nelze zpracovat – {e}")
 
@@ -272,7 +301,7 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
     return items
 
 # ==========================================
-# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (OFFLINE)
+# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ & OBJEKTŮ
 # ==========================================
 def validate_ico(ico: Any) -> bool:
     ico_str = clean_ico(ico)
@@ -596,7 +625,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 28.0 Access Reborn / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 29.0 Evidence Core / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -607,7 +636,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v28.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v29.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -615,6 +644,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px; }
     .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; font-weight: bold; }
     .cart-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ff4b4b; margin-top: 15px; }
+    .evidence-box { border: 2px solid #28a745; padding: 15px; border-radius: 8px; margin-bottom: 20px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -630,17 +660,17 @@ df_customers = load_all_customers()
 
 menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence (Náhrada Access)"])
 
-if menu_volba == "📝 Tvorba Dodacího listu":
-    celkem_polozek = 0
-    celkem_cena = 0.0
-    for k, v in st.session_state.data_zakazky.items():
-        if v.get("q", 0) > 0: 
-            celkem_polozek += v["q"]
-            celkem_cena += (v["q"] * v.get("p", 0))
-    for k, v in st.session_state.dynamic_items.items():
-        celkem_polozek += v.get("q", 0)
-        celkem_cena += (v.get("q", 0) * v.get("p", 0))
+celkem_polozek = 0
+celkem_cena = 0.0
+for k, v in st.session_state.data_zakazky.items():
+    if v.get("q", 0) > 0: 
+        celkem_polozek += v["q"]
+        celkem_cena += (v["q"] * v.get("p", 0))
+for k, v in st.session_state.dynamic_items.items():
+    celkem_polozek += v.get("q", 0)
+    celkem_cena += (v.get("q", 0) * v.get("p", 0))
 
+if menu_volba == "📝 Tvorba Dodacího listu":
     with st.sidebar:
         st.header("🏢 Hlavička Dodacího listu")
         typ_dl = st.radio("Hlavička 1. sekce:", ["Standard (Kontroly)", "Opravy (Prior)"])
@@ -686,6 +716,8 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
         st.subheader("🏢 Umístění v objektech")
         objekty_text = ""
+        ulozene_objekty = []
+        aktualni_ico = ""
         
         if st.session_state.vybrany_zakaznik:
             aktualni_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO"))
@@ -718,10 +750,9 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 28.0 Access Reborn | Nahrazení starých MS Access formulářů novou technologií")
+    st.caption("Verze 29.0 Evidence Core | Přidána kompletní Zpráva o kontrole HP přímo do tabulky")
 
-    st.markdown("### ⚙️ Zobrazit sloupce objektů (Ano/Ne)")
-    st.info("Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-` u čísel.")
+    st.markdown("### ⚙️ Zobrazit sloupce objektů pro Fakturaci (Ano/Ne)")
     
     col_cb1, col_cb2, col_cb3, col_cb4, col_cb5 = st.columns(5)
     with col_cb1: show_o1 = st.checkbox("✅ Objekt 1 (O1)", value=True)
@@ -787,7 +818,54 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         }
 
     with tabs[0]:
-        st.subheader("1. KONTROLY HASÍCÍCH PŘÍSTROJŮ")
+        # --- 1. MODUL EVIDENCE HP (NOVÉ) ---
+        st.markdown("<div class='evidence-box'>", unsafe_allow_html=True)
+        st.markdown("### 📋 Zpráva o kontrole HP (Evidence přístrojů)")
+        
+        if not st.session_state.vybrany_zakaznik:
+            st.info("Zvolte odběratele v levém panelu, aby se otevřela evidence jeho přístrojů.")
+        else:
+            conn = sqlite3.connect(DB_PATH)
+            # Načtení stávající evidence pro tohoto zákazníka
+            df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, objekt, misto, do_opravy, do_skladu FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
+            if df_evid.empty:
+                # Vytvoření prázdného DataFrame se správnými sloupci pro nový zápis
+                df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "objekt", "misto", "do_opravy", "do_skladu"])
+            
+            st.caption("Vyplňte seznam kontrolovaných přístrojů. Funguje to jako Excel - můžete přidávat řádky donekonečna.")
+            
+            edited_evid = st.data_editor(
+                df_evid,
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "druh": st.column_config.SelectboxColumn("Druh", options=["přenosný", "pojízdný", "přívěsný", "AHS"], width="small"),
+                    "typ_hp": st.column_config.TextColumn("Typ HP", width="medium"),
+                    "vyr_cislo": st.column_config.TextColumn("Výr. číslo", width="small"),
+                    "rok_vyr": st.column_config.NumberColumn("Rok výr.", format="%d", width="small"),
+                    "mesic_vyr": st.column_config.NumberColumn("Měs.", min_value=1, max_value=12, width="small"),
+                    "tlak_rok": st.column_config.NumberColumn("Rok tlak.", format="%d", width="small"),
+                    "tlak_mesic": st.column_config.NumberColumn("Měs.", min_value=1, max_value=12, width="small"),
+                    "stav": st.column_config.SelectboxColumn("Stav", options=["S", "NO", "NOPZ", "CH", "S-nový", "NV"], width="small"),
+                    "objekt": st.column_config.SelectboxColumn("Objekt", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
+                    "misto": st.column_config.TextColumn("Umístění", width="medium"),
+                    "do_opravy": st.column_config.CheckboxColumn("Do opr.", default=False, width="small"),
+                    "do_skladu": st.column_config.CheckboxColumn("Sklad", default=False, width="small"),
+                }
+            )
+            
+            if st.button("💾 Uložit Zprávu o kontrole do Databáze zákazníka"):
+                # Vyčistit a zapsat
+                edited_evid = edited_evid.dropna(how='all') # Odstranit prázdné řádky
+                edited_evid["ico"] = aktualni_ico
+                conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
+                edited_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
+                st.success("Evidence přístrojů byla úspěšně uložena!")
+            conn.close()
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # --- 2. MODUL FAKTURACE HP ---
+        st.markdown("### 💰 Fakturace úkonů (Dodací list)")
         render_table_header()
         item_row("HP", "Kontrola HP (shodný)", 29.40, "h1")
         item_row("HP", "Kontrola HP (neshodný - opravitelný)", 19.70, "h2")
@@ -795,7 +873,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         
         mnozstvi_neopravitelne = st.session_state.data_zakazky.get("Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", {}).get("q", 0)
         if mnozstvi_neopravitelne > 0:
-            st.warning("⚠️ Zadejte prosím důvody vyřazení neopravitelných přístrojů.")
+            st.warning("⚠️ Zadejte prosím důvody vyřazení neopravitelných přístrojů pro tisk do Dodacího listu.")
             vybrane_kody = st.multiselect("Důvody vyřazení (A-K):", options=list(DUVODY_VYRAZENI.keys()), format_func=lambda x: f"Kód {x} - {DUVODY_VYRAZENI[x]}")
             st.session_state.vyrazene_kody = vybrane_kody
         else:
@@ -1003,11 +1081,9 @@ elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
             if "clean_ico" in view_df.columns: view_df = view_df.drop(columns=["clean_ico"])
             view_df = view_df.fillna("")
             
-            # BEZPEČNOSTNÍ POJISTKA: Zabrání chybě KeyError (Vybere jen ty sloupce, které máte v DB)
             dostupne_sloupce = view_df.columns.tolist()
             zobrazit_sloupce = [col for col in ["ICO", "FIRMA", "ULICE", "ADRESA1", "ADRESA2", "ADRESA3", "PSC", "DIC"] if col in dostupne_sloupce]
             
-            # Pokud by náhodou nenašel žádný ze základních, zobrazí všechny dostupné
             if not zobrazit_sloupce:
                 zobrazit_sloupce = dostupne_sloupce
                 
