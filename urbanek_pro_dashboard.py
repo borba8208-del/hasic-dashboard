@@ -85,7 +85,6 @@ def init_db():
 
 init_db()
 
-# Paměť stavu
 if "data_zakazky" not in st.session_state: st.session_state.data_zakazky = {}
 if "dynamic_items" not in st.session_state: st.session_state.dynamic_items = {}
 if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik = None
@@ -232,7 +231,7 @@ def import_all_ceniky() -> str:
                 if zakaznici:
                     df_xml = pd.DataFrame(zakaznici)
                     df_xml.to_sql("obchpartner", connection, if_exists="replace", index=False)
-                    log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem). Čeština opravena!")
+                    log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem).")
             except Exception as e:
                 log_messages.append(f"❌ obchpartner.xml: Nelze zpracovat – {e}")
 
@@ -453,7 +452,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.ln(5)
 
     def draw_category(cat_num_title: str, item_cats: List[str]):
-        cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v["q"] > 0]
+        cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v.get("q", 0) > 0]
         if not cat_items: return 0.0
 
         pdf.set_font(pismo, "B", 9)
@@ -477,7 +476,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
         for name, vals in cat_items:
-            # Bezpečné čtení q1-q5 pomocí .get(), abychom zabránili KeyError z paměti staré relace
             q1 = vals.get("q1", 0)
             q2 = vals.get("q2", 0)
             q3 = vals.get("q3", 0)
@@ -598,7 +596,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 27.1 Dynamic Matrix / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 28.0 Access Reborn / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -607,9 +605,9 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         return None
 
 # ==========================================
-# 5. STREAMLIT UI - DYNAMIC MATRIX
+# 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v27.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v28.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -630,19 +628,19 @@ def load_all_customers() -> Optional[pd.DataFrame]:
 
 df_customers = load_all_customers()
 
-menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence"])
-
-celkem_polozek = 0
-celkem_cena = 0.0
-for k, v in st.session_state.data_zakazky.items():
-    if v.get("q", 0) > 0: 
-        celkem_polozek += v["q"]
-        celkem_cena += (v["q"] * v.get("p", 0))
-for k, v in st.session_state.dynamic_items.items():
-    celkem_polozek += v.get("q", 0)
-    celkem_cena += (v.get("q", 0) * v.get("p", 0))
+menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence (Náhrada Access)"])
 
 if menu_volba == "📝 Tvorba Dodacího listu":
+    celkem_polozek = 0
+    celkem_cena = 0.0
+    for k, v in st.session_state.data_zakazky.items():
+        if v.get("q", 0) > 0: 
+            celkem_polozek += v["q"]
+            celkem_cena += (v["q"] * v.get("p", 0))
+    for k, v in st.session_state.dynamic_items.items():
+        celkem_polozek += v.get("q", 0)
+        celkem_cena += (v.get("q", 0) * v.get("p", 0))
+
     with st.sidebar:
         st.header("🏢 Hlavička Dodacího listu")
         typ_dl = st.radio("Hlavička 1. sekce:", ["Standard (Kontroly)", "Opravy (Prior)"])
@@ -713,7 +711,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         </div>
         """, unsafe_allow_html=True)
         
-        # Záchranné tlačítko pro reset DL
         if st.button("🗑️ Vyprázdnit DL (Začít znovu)", use_container_width=True):
             st.session_state.data_zakazky = {}
             st.session_state.dynamic_items = {}
@@ -721,11 +718,10 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 27.1 Dynamic Matrix | Nastavte si počet sloupců a tlačítka +/- se vrátí!")
+    st.caption("Verze 28.0 Access Reborn | Nahrazení starých MS Access formulářů novou technologií")
 
-    # --- PŘEPÍNAČE OBJEKTŮ (Zaškrtávací pole Ano/Ne) ---
     st.markdown("### ⚙️ Zobrazit sloupce objektů (Ano/Ne)")
-    st.info("Zaškrtněte, kolik objektů na tomto DL vyplňujete. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-` u čísel.")
+    st.info("Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-` u čísel.")
     
     col_cb1, col_cb2, col_cb3, col_cb4, col_cb5 = st.columns(5)
     with col_cb1: show_o1 = st.checkbox("✅ Objekt 1 (O1)", value=True)
@@ -767,8 +763,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         
         idx = 2
         q1 = q2 = q3 = q4 = q5 = 0.0
-        
-        # Hodnoty z předchozí paměti (proti smazání při přepnutí tabů)
         old_val = st.session_state.data_zakazky.get(item_name, {})
         
         if show_o1:
@@ -858,7 +852,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             items_dict_lookup = {item["nazev"]: item for item in db_items}
             
             z_layout = get_col_layout()
-            z_layout.append(1.0) # Prostor pro tlačítko Přidat
+            z_layout.append(1.0) 
             z_cols = st.columns(z_layout)
             
             with z_cols[0]: zvolena_polozka = st.selectbox("Vyberte ze skladu:", ["-- Vyberte --"] + list(items_dict_lookup.keys()))
@@ -907,7 +901,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             for k, v in list(st.session_state.dynamic_items.items()):
                 ca, cb, cc, cd = st.columns([5, 2, 2, 1])
                 
-                # Bezpečné zobrazení pouze těch sloupců, které jsou zaškrtnuté
                 o_strs = []
                 if show_o1: o_strs.append(f"O1: {v.get('q1',0)}")
                 if show_o2: o_strs.append(f"O2: {v.get('q2',0)}")
@@ -949,26 +942,78 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                         if pdf_doc:
                             st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
 
-elif menu_volba == "🗄️ Katalog a Evidence":
-    st.title("🗄️ Katalog, Sklad a Evidence")
+elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
+    st.title("🗄️ Katalog, Sklad a Databáze")
     
-    with st.expander("⚙️ Import dat z W-SERVIS (Synchronizace)"):
-        st.info("Nahrajte do složky 'data/ceniky/' vaše ceníky, exportní soubor 'expimp.csv' a také soubor 'obchpartner.xml'.")
+    evid_tabs = st.tabs(["📦 Správa Zboží a Ceníku", "🏢 Databáze Zákazníků", "⚙️ Import z W-SERVIS"])
+
+    with evid_tabs[0]:
+        st.markdown("### Nová karta položky (Zboží / ND)")
+        st.info("Zde vytvoříte novou položku. Bude okamžitě dostupná v roletce u Dodacího listu.")
+        
+        with st.expander("➕ Otevřít formulář pro novou položku", expanded=False):
+            with st.form("nove_zbozi_form", clear_on_submit=True):
+                c1, c2, c3 = st.columns([3, 1.5, 1.5])
+                with c1: form_nazev = st.text_input("Název položky (např. Hasicí přístroj P6, Tabulka fotolumin)", max_chars=150)
+                with c2: form_cena = st.number_input("Cena bez DPH (Kč)", min_value=0.0, step=10.0, format="%.2f")
+                with c3: form_kat = st.selectbox("Kategorie / Druh", ["Zboží", "ND_HP", "ND_Voda", "TAB", "HILTI", "CIDLO", "PASKA", "Ostatni"])
+
+                if st.form_submit_button("💾 Uložit novou položku do DB"):
+                    if form_nazev.strip():
+                        conn = sqlite3.connect(DB_PATH)
+                        cur = conn.cursor()
+                        table_target = normalize_category_to_table(form_kat)
+                        cur.execute(f"CREATE TABLE IF NOT EXISTS {table_target} (nazev TEXT, cena REAL)")
+                        cur.execute(f"INSERT INTO {table_target} (nazev, cena) VALUES (?, ?)", (form_nazev.strip(), form_cena))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Položka '{form_nazev}' byla úspěšně přidána do ceníku!")
+                    else:
+                        st.error("Název položky nesmí být prázdný!")
+
+        st.markdown("### 📋 Aktivní ceník (Editovatelná tabulka)")
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                df_zbozi = pd.read_sql("SELECT nazev as 'Název položky', cena as 'Cena bez DPH (Kč)' FROM cenik_zbozi ORDER BY nazev", conn)
+                edited_zbozi = st.data_editor(
+                    df_zbozi, 
+                    use_container_width=True, 
+                    num_rows="dynamic", 
+                    key="editor_zbozi",
+                    column_config={
+                        "Název položky": st.column_config.TextColumn(required=True),
+                        "Cena bez DPH (Kč)": st.column_config.NumberColumn(min_value=0.0, format="%.2f Kč")
+                    }
+                )
+                
+                if st.button("💾 Uložit změny provedené v tabulce"):
+                    edited_zbozi.columns = ["nazev", "cena"]
+                    edited_zbozi = edited_zbozi.dropna(subset=["nazev"])
+                    edited_zbozi.to_sql("cenik_zbozi", conn, if_exists="replace", index=False)
+                    st.success("Změny v ceníku byly trvale uloženy!")
+            except Exception:
+                st.warning("Ceník Zboží je zatím prázdný.")
+            conn.close()
+
+    with evid_tabs[1]:
+        st.markdown("### Databáze uložených zákazníků")
+        if df_customers is not None and not df_customers.empty:
+            view_df = df_customers.copy()
+            if "clean_ico" in view_df.columns: view_df = view_df.drop(columns=["clean_ico"])
+            view_df = view_df.fillna("")
+            st.dataframe(view_df[["ICO", "FIRMA", "ULICE", "ADRESA3", "PSC"]], use_container_width=True, height=500)
+        else:
+            st.info("Zatím nejsou nahráni žádní zákazníci.")
+
+    with evid_tabs[2]:
+        st.markdown("### Hromadný import ceníků")
+        st.info("Nahrajte do složky 'data/ceniky/' vaše Excel soubory, exportní soubor 'expimp.csv' a také soubor 'obchpartner.xml'.")
         if st.button("🚀 Spustit kompletní synchronizaci", type="primary"):
             with st.spinner("Aktualizuji databázi (překládám kódování u zákazníků)..."):
                 log = import_all_ceniky()
                 st.success("Hotovo!")
                 st.code(log)
-
-    st.subheader("Aktuální stav Ceníků a Zboží v DB")
-    if os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            df_zbozi = pd.read_sql("SELECT nazev as 'Název položky', cena as 'Cena (Kč)' FROM cenik_zbozi ORDER BY nazev", conn)
-            st.dataframe(df_zbozi, use_container_width=True, height=400)
-        except Exception:
-            st.info("Tabulka Zboží je zatím prázdná.")
-        conn.close()
 
 st.sidebar.divider()
 st.sidebar.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']}")
