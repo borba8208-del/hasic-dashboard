@@ -477,8 +477,15 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
         for name, vals in cat_items:
-            q1, q2, q3, q4, q5 = vals.get("q1",0), vals.get("q2",0), vals.get("q3",0), vals.get("q4",0), vals.get("q5",0)
-            qty, price = vals["q"], vals["p"]
+            # Bezpečné čtení q1-q5 pomocí .get(), abychom zabránili KeyError z paměti staré relace
+            q1 = vals.get("q1", 0)
+            q2 = vals.get("q2", 0)
+            q3 = vals.get("q3", 0)
+            q4 = vals.get("q4", 0)
+            q5 = vals.get("q5", 0)
+            qty = vals.get("q", 0)
+            price = vals.get("p", 0)
+            
             line_total = qty * price
             cat_total += line_total
             
@@ -591,7 +598,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 27.0 Matrix Layout / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 27.1 Dynamic Matrix / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -600,9 +607,9 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         return None
 
 # ==========================================
-# 5. STREAMLIT UI - MATRIX LAYOUT
+# 5. STREAMLIT UI - DYNAMIC MATRIX
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v27.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v27.1", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -628,12 +635,12 @@ menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího list
 celkem_polozek = 0
 celkem_cena = 0.0
 for k, v in st.session_state.data_zakazky.items():
-    if v["q"] > 0: 
+    if v.get("q", 0) > 0: 
         celkem_polozek += v["q"]
-        celkem_cena += (v["q"] * v["p"])
+        celkem_cena += (v["q"] * v.get("p", 0))
 for k, v in st.session_state.dynamic_items.items():
-    celkem_polozek += v["q"]
-    celkem_cena += (v["q"] * v["p"])
+    celkem_polozek += v.get("q", 0)
+    celkem_cena += (v.get("q", 0) * v.get("p", 0))
 
 if menu_volba == "📝 Tvorba Dodacího listu":
     with st.sidebar:
@@ -687,10 +694,10 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             ulozene_objekty = get_objects_from_db(aktualni_ico)
             
             if ulozene_objekty:
-                vybrane_objekty = st.multiselect("Vyberte objekty (Objekt 1 až 5):", options=ulozene_objekty, default=[])
+                vybrane_objekty = st.multiselect("Vyberte objekty z paměti pro tisk DL:", options=ulozene_objekty, default=[])
                 objekty_text = "\n".join(vybrane_objekty)
                 
-            with st.expander("➕ Přidat nový objekt"):
+            with st.expander("➕ Přidat nový objekt k zákazníkovi"):
                 with st.form("add_obj_form", clear_on_submit=True):
                     novy_objekt = st.text_input("Název objektu")
                     if st.form_submit_button("Uložit"):
@@ -705,36 +712,80 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             Celkem: {celkem_cena:,.2f} Kč
         </div>
         """, unsafe_allow_html=True)
+        
+        # Záchranné tlačítko pro reset DL
+        if st.button("🗑️ Vyprázdnit DL (Začít znovu)", use_container_width=True):
+            st.session_state.data_zakazky = {}
+            st.session_state.dynamic_items = {}
+            st.session_state.vyrazene_kody = []
+            st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 27.0 Matrix | Podpora přesného zadávání pro jednotlivé objekty 1 až 5")
+    st.caption("Verze 27.1 Dynamic Matrix | Nastavte si počet sloupců a tlačítka +/- se vrátí!")
+
+    # --- PŘEPÍNAČE OBJEKTŮ (Zaškrtávací pole Ano/Ne) ---
+    st.markdown("### ⚙️ Zobrazit sloupce objektů (Ano/Ne)")
+    st.info("Zaškrtněte, kolik objektů na tomto DL vyplňujete. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-` u čísel.")
+    
+    col_cb1, col_cb2, col_cb3, col_cb4, col_cb5 = st.columns(5)
+    with col_cb1: show_o1 = st.checkbox("✅ Objekt 1 (O1)", value=True)
+    with col_cb2: show_o2 = st.checkbox("✅ Objekt 2 (O2)", value=False)
+    with col_cb3: show_o3 = st.checkbox("✅ Objekt 3 (O3)", value=False)
+    with col_cb4: show_o4 = st.checkbox("✅ Objekt 4 (O4)", value=False)
+    with col_cb5: show_o5 = st.checkbox("✅ Objekt 5 (O5)", value=False)
+    st.divider()
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
 
+    def get_col_layout():
+        layout = [3.5, 1.5]
+        if show_o1: layout.append(1.0)
+        if show_o2: layout.append(1.0)
+        if show_o3: layout.append(1.0)
+        if show_o4: layout.append(1.0)
+        if show_o5: layout.append(1.0)
+        return layout
+
     def render_table_header():
-        """Vykreslí hlavičku pro 5 objektů (Matrix layout)"""
-        cols = st.columns([3.5, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8])
-        with cols[0]: st.markdown("**Název položky**")
-        with cols[1]: st.markdown("**Cena**")
-        with cols[2]: st.markdown("**O1**", help="Objekt 1")
-        with cols[3]: st.markdown("**O2**", help="Objekt 2")
-        with cols[4]: st.markdown("**O3**", help="Objekt 3")
-        with cols[5]: st.markdown("**O4**", help="Objekt 4")
-        with cols[6]: st.markdown("**O5**", help="Objekt 5")
+        cols = st.columns(get_col_layout())
+        cols[0].markdown("**Název položky**")
+        cols[1].markdown("**Cena bez DPH**")
+        idx = 2
+        if show_o1: cols[idx].markdown("**O1**"); idx+=1
+        if show_o2: cols[idx].markdown("**O2**"); idx+=1
+        if show_o3: cols[idx].markdown("**O3**"); idx+=1
+        if show_o4: cols[idx].markdown("**O4**"); idx+=1
+        if show_o5: cols[idx].markdown("**O5**"); idx+=1
 
     def item_row(cat_key: str, item_name: str, fallback_price: float, row_id: str, step_val: float = 1.0) -> None:
         p_val = get_price(cat_key, item_name)
         if p_val == 0.0: p_val = fallback_price
 
-        cols = st.columns([3.5, 1.5, 0.8, 0.8, 0.8, 0.8, 0.8])
+        cols = st.columns(get_col_layout())
         with cols[0]: st.write(f"{item_name}")
         with cols[1]: p = st.number_input(f"P_{row_id}", min_value=0.0, step=0.1, value=float(p_val), key=f"p_{row_id}", label_visibility="collapsed")
         
-        with cols[2]: q1 = st.number_input(f"1_{row_id}", min_value=0.0, step=float(step_val), key=f"q1_{row_id}", label_visibility="collapsed")
-        with cols[3]: q2 = st.number_input(f"2_{row_id}", min_value=0.0, step=float(step_val), key=f"q2_{row_id}", label_visibility="collapsed")
-        with cols[4]: q3 = st.number_input(f"3_{row_id}", min_value=0.0, step=float(step_val), key=f"q3_{row_id}", label_visibility="collapsed")
-        with cols[5]: q4 = st.number_input(f"4_{row_id}", min_value=0.0, step=float(step_val), key=f"q4_{row_id}", label_visibility="collapsed")
-        with cols[6]: q5 = st.number_input(f"5_{row_id}", min_value=0.0, step=float(step_val), key=f"q5_{row_id}", label_visibility="collapsed")
+        idx = 2
+        q1 = q2 = q3 = q4 = q5 = 0.0
+        
+        # Hodnoty z předchozí paměti (proti smazání při přepnutí tabů)
+        old_val = st.session_state.data_zakazky.get(item_name, {})
+        
+        if show_o1:
+            with cols[idx]: q1 = st.number_input(f"1_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q1", 0.0)), key=f"q1_{row_id}", label_visibility="collapsed")
+            idx+=1
+        if show_o2:
+            with cols[idx]: q2 = st.number_input(f"2_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q2", 0.0)), key=f"q2_{row_id}", label_visibility="collapsed")
+            idx+=1
+        if show_o3:
+            with cols[idx]: q3 = st.number_input(f"3_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q3", 0.0)), key=f"q3_{row_id}", label_visibility="collapsed")
+            idx+=1
+        if show_o4:
+            with cols[idx]: q4 = st.number_input(f"4_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q4", 0.0)), key=f"q4_{row_id}", label_visibility="collapsed")
+            idx+=1
+        if show_o5:
+            with cols[idx]: q5 = st.number_input(f"5_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q5", 0.0)), key=f"q5_{row_id}", label_visibility="collapsed")
+            idx+=1
         
         q_tot = q1 + q2 + q3 + q4 + q5
         st.session_state.data_zakazky[item_name] = {
@@ -805,19 +856,31 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.warning("⚠️ Sklad je prázdný. Klikněte vlevo v Evidenci na Synchronizovat.")
         else:
             items_dict_lookup = {item["nazev"]: item for item in db_items}
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([3, 1.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1])
-            with c1: zvolena_polozka = st.selectbox("Vyberte položku ze skladu:", ["-- Vyberte --"] + list(items_dict_lookup.keys()))
+            
+            z_layout = get_col_layout()
+            z_layout.append(1.0) # Prostor pro tlačítko Přidat
+            z_cols = st.columns(z_layout)
+            
+            with z_cols[0]: zvolena_polozka = st.selectbox("Vyberte ze skladu:", ["-- Vyberte --"] + list(items_dict_lookup.keys()))
             
             if zvolena_polozka != "-- Vyberte --":
                 def_cena = items_dict_lookup[zvolena_polozka]["cena"]
-                with c2: cena_input = st.number_input("Cena/ks (Kč)", value=def_cena, step=1.0)
-                with c3: mq1 = st.number_input("O1", value=1.0, min_value=0.0, step=1.0)
-                with c4: mq2 = st.number_input("O2", value=0.0, min_value=0.0, step=1.0)
-                with c5: mq3 = st.number_input("O3", value=0.0, min_value=0.0, step=1.0)
-                with c6: mq4 = st.number_input("O4", value=0.0, min_value=0.0, step=1.0)
-                with c7: mq5 = st.number_input("O5", value=0.0, min_value=0.0, step=1.0)
+                with z_cols[1]: cena_input = st.number_input("Cena", value=def_cena, step=1.0, key="zb_cena")
                 
-                with c8:
+                idx = 2
+                mq1 = mq2 = mq3 = mq4 = mq5 = 0.0
+                if show_o1:
+                    with z_cols[idx]: mq1 = st.number_input("O1", value=1.0, min_value=0.0, step=1.0, key="zb1"); idx+=1
+                if show_o2:
+                    with z_cols[idx]: mq2 = st.number_input("O2", value=0.0, min_value=0.0, step=1.0, key="zb2"); idx+=1
+                if show_o3:
+                    with z_cols[idx]: mq3 = st.number_input("O3", value=0.0, min_value=0.0, step=1.0, key="zb3"); idx+=1
+                if show_o4:
+                    with z_cols[idx]: mq4 = st.number_input("O4", value=0.0, min_value=0.0, step=1.0, key="zb4"); idx+=1
+                if show_o5:
+                    with z_cols[idx]: mq5 = st.number_input("O5", value=0.0, min_value=0.0, step=1.0, key="zb5"); idx+=1
+                
+                with z_cols[idx]:
                     st.write("")
                     if st.button("➕ Přidat"):
                         interni_kat = items_dict_lookup[zvolena_polozka]["internal_cat"]
@@ -826,8 +889,13 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                         
                         if zvolena_polozka in st.session_state.dynamic_items:
                             di = st.session_state.dynamic_items[zvolena_polozka]
-                            di["q1"] += mq1; di["q2"] += mq2; di["q3"] += mq3; di["q4"] += mq4; di["q5"] += mq5
-                            di["q"] += mq_tot; di["p"] = cena_input
+                            di["q1"] = di.get("q1",0) + mq1
+                            di["q2"] = di.get("q2",0) + mq2
+                            di["q3"] = di.get("q3",0) + mq3
+                            di["q4"] = di.get("q4",0) + mq4
+                            di["q5"] = di.get("q5",0) + mq5
+                            di["q"] = di.get("q",0) + mq_tot
+                            di["p"] = cena_input
                         else:
                             st.session_state.dynamic_items[zvolena_polozka] = {
                                 "q1": mq1, "q2": mq2, "q3": mq3, "q4": mq4, "q5": mq5, "q": mq_tot, "p": cena_input, "cat": interni_kat
@@ -838,9 +906,19 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.divider()
             for k, v in list(st.session_state.dynamic_items.items()):
                 ca, cb, cc, cd = st.columns([5, 2, 2, 1])
-                ca.write(f"• {k} (O1:{v['q1']}, O2:{v['q2']}, O3:{v['q3']}, O4:{v['q4']}, O5:{v['q5']})")
-                cb.write(f"Celkem: {v['q']} ks")
-                cc.write(f"{v['q']*v['p']:.2f} Kč")
+                
+                # Bezpečné zobrazení pouze těch sloupců, které jsou zaškrtnuté
+                o_strs = []
+                if show_o1: o_strs.append(f"O1: {v.get('q1',0)}")
+                if show_o2: o_strs.append(f"O2: {v.get('q2',0)}")
+                if show_o3: o_strs.append(f"O3: {v.get('q3',0)}")
+                if show_o4: o_strs.append(f"O4: {v.get('q4',0)}")
+                if show_o5: o_strs.append(f"O5: {v.get('q5',0)}")
+                o_text = f" ({', '.join(o_strs)})" if o_strs else ""
+                
+                ca.write(f"• {k}{o_text}")
+                cb.write(f"Celkem: {v.get('q',0)} ks")
+                cc.write(f"{v.get('q',0) * v.get('p',0):,.2f} Kč")
                 if cd.button("❌", key=f"del_{k}"):
                     del st.session_state.dynamic_items[k]
                     st.rerun()
@@ -848,7 +926,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
     with tabs[5]:
         active_items = {}
         for k, v in st.session_state.data_zakazky.items():
-            if v["q"] > 0: active_items[k] = v
+            if v.get("q", 0) > 0: active_items[k] = v
         for k, v in st.session_state.dynamic_items.items():
             active_items[k] = v
 
