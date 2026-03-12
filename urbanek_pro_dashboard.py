@@ -241,6 +241,96 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
 # ==========================================
 import requests
 
+def validate_ico(ico: str) -> bool:
+    ico = str(ico or "").strip()
+    if not ico.isdigit() or len(ico) != 8:
+        return False
+
+    digits = [int(d) for d in ico]
+    weights = [8, 7, 6, 5, 4, 3, 2]
+    s = sum(d * w for d, w in zip(digits[:7], weights))
+    r = s % 11
+
+    if r == 0:
+        c = 1
+    elif r == 1:
+        c = 0
+    else:
+        c = 11 - r
+
+    return digits[7] == c
+
+def load_local_customers() -> Optional[pd.DataFrame]:
+    path = os.path.join("data", "ceniky", "zakaznici.csv")
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_csv(path, sep=";")
+    except:
+        return None
+
+def find_customer_by_ico_local(ico: str) -> Optional[Dict[str, Any]]:
+    if not validate_ico(ico):
+        return None
+
+    df = load_local_customers()
+    if df is None:
+        return None
+
+    row = df[df["ico"].astype(str).str.strip() == str(ico).strip()]
+    if row.empty:
+        return None
+
+    return row.iloc[0].to_dict()
+
+def build_form_data_from_customer(ico: str) -> Optional[Dict[str, Any]]:
+    cust = find_customer_by_ico_local(ico)
+    if not cust:
+        return None
+
+    return {
+        "ICO": cust.get("ico", ""),
+        "DIC": cust.get("dic", ""),
+        "FIRMA": cust.get("firma", ""),
+        "ULICE": cust.get("ulice", ""),
+        "CP": cust.get("cp", ""),
+        "CO": cust.get("co", ""),
+        "ADRESA3": cust.get("mesto", ""),
+        "PSC": cust.get("psc", ""),
+        "KONTAKT": cust.get("kontakt", ""),
+        "TELEFON": cust.get("telefon", ""),
+        "EMAIL": cust.get("email", ""),
+        "UCET": cust.get("ucet", ""),
+        "POZNAMKA": cust.get("poznamka", ""),
+        "ARES_OK": False,
+    }
+
+def compare_customer_xml_vs_ares(ico: str) -> Optional[Dict[str, Any]]:
+    local = build_form_data_from_customer(ico)
+    remote = get_company_from_ares(ico)
+
+    if not local and not remote:
+        return None
+
+    def safe(v):
+        return "" if pd.isna(v) or str(v) in ["nan", "None", ""] else str(v).strip()
+
+    diff = {}
+    keys = ["FIRMA", "ULICE", "CP", "CO", "ADRESA3", "PSC", "DIC"]
+
+    for k in keys:
+        lv = safe(local.get(k)) if local else ""
+        rv = safe(remote.get(k)) if remote else ""
+        if lv != rv:
+            diff[k] = (lv, rv)
+
+    return {
+        "ico": ico,
+        "local": local,
+        "ares": remote,
+        "diff": diff,
+    }
+
 def get_company_from_ares(ico: str | int) -> Optional[Dict[str, Any]]:
     ico_clean = str(ico).strip().zfill(8)
     url = f"https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty/{ico_clean}"
@@ -556,12 +646,35 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                 curr = filt.iloc[idx].to_dict()
 
                 if (st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik.get("ICO") != curr.get("ICO")):
-                    if not curr.get("ARES_OK"):
-                        with st.spinner("Ladění adresy přes ARES..."):
-                            ares = get_company_from_ares(curr["ICO"])
+                    ico_val = str(curr.get("ICO", "")).strip()
+                    
+                    with st.spinner("Načítání a ověřování dat zákazníka..."):
+                        if not validate_ico(ico_val):
+                            st.warning(f"Upozornění: Neplatné IČO ({ico_val})")
+                        
+                        # 1) Zkusit lokální XML/CSV databázi
+                        local_data = build_form_data_from_customer(ico_val)
+                        if local_data:
+                            curr.update(local_data)
+                            
+                        # 2) Pokud nemá ARES_OK, zkusit ARES jako fallback
+                        if not curr.get("ARES_OK"):
+                            ares = get_company_from_ares(ico_val)
                             if ares:
-                                curr.update(ares); update_customer_in_db(curr)
+                                curr.update(ares)
+                                update_customer_in_db(curr)
+                                
                     st.session_state.vybrany_zakaznik = curr.copy()
+                    
+                # 3) BONUS: Diff Engine (Porovnání lokální DB a ARES)
+                if st.session_state.vybrany_zakaznik:
+                    ico_val = str(st.session_state.vybrany_zakaznik.get("ICO", "")).strip()
+                    diff_result = compare_customer_xml_vs_ares(ico_val)
+                    if diff_result and diff_result.get("diff"):
+                        with st.expander("⚠️ Nalezeny rozdíly mezi lokální evidencí a ARES"):
+                            st.info("Zobrazuji rozdíly (Lokální vs. ARES):")
+                            st.json(diff_result["diff"])
+
             else: st.warning("Nenalezeno.")
 
         st.divider()
