@@ -11,6 +11,16 @@ import pandas as pd
 from fpdf import FPDF
 
 # ==========================================
+# UNIVERZÁLNÍ ČISTIČ IČO (Oprava problému s Excelem .0)
+# ==========================================
+def clean_ico(ico_val: Any) -> str:
+    """Očistí IČO od desetinných míst z Pandas a prázdných znaků."""
+    s = str(ico_val).strip()
+    if s.lower() in ['nan', 'none', 'null', '']: 
+        return ""
+    return s.split('.')[0]
+
+# ==========================================
 # ČÍSELNÍKY DLE W-SERVIS DATABÁZE
 # ==========================================
 DUVODY_VYRAZENI = {
@@ -230,11 +240,11 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
 # ==========================================
 # 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (BEZ ARES)
 # ==========================================
-def validate_ico(ico: str) -> bool:
-    ico = str(ico or "").strip()
-    if not ico.isdigit() or len(ico) != 8:
+def validate_ico(ico: Any) -> bool:
+    ico_str = clean_ico(ico)
+    if not ico_str.isdigit() or len(ico_str) != 8:
         return False
-    digits = [int(d) for d in ico]
+    digits = [int(d) for d in ico_str]
     weights = [8, 7, 6, 5, 4, 3, 2]
     s = sum(d * w for d, w in zip(digits[:7], weights))
     r = s % 11
@@ -243,21 +253,36 @@ def validate_ico(ico: str) -> bool:
 
 def load_local_customers() -> Optional[pd.DataFrame]:
     path = os.path.join("data", "ceniky", "zakaznici.csv")
-    return safe_read_csv(path)
+    df = safe_read_csv(path)
+    if df is not None and not df.empty:
+        # Sjednocení názvů sloupců - odolnost proti "IČO", "Ičo", "ICO"
+        def clean_col(c):
+            return str(c).strip().lower().replace("č", "c").replace("ř", "r").replace("š", "s")
+        df.columns = [clean_col(c) for c in df.columns]
+        
+        # Očistíme samotná data IČO hned při načtení
+        if "ico" in df.columns:
+            df["ico"] = df["ico"].apply(clean_ico)
+            
+        return df
+    return None
 
-def find_customer_by_ico_local(ico: str) -> Optional[Dict[str, Any]]:
-    if not validate_ico(ico): return None
+def find_customer_by_ico_local(ico: Any) -> Optional[Dict[str, Any]]:
+    ico_clean = clean_ico(ico)
+    if not validate_ico(ico_clean): return None
+    
     df = load_local_customers()
-    if df is None: return None
-    row = df[df["ico"].astype(str).str.strip() == str(ico).strip()]
+    if df is None or "ico" not in df.columns: return None
+    
+    row = df[df["ico"] == ico_clean]
     if row.empty: return None
     return row.iloc[0].to_dict()
 
-def build_form_data_from_customer(ico: str) -> Optional[Dict[str, Any]]:
+def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
     cust = find_customer_by_ico_local(ico)
     if not cust: return None
     return {
-        "ICO": cust.get("ico", ""),
+        "ICO": clean_ico(cust.get("ico", "")),
         "DIC": cust.get("dic", ""),
         "FIRMA": cust.get("firma", ""),
         "ULICE": cust.get("ulice", ""),
@@ -289,29 +314,32 @@ def update_customer_in_db(zakaznik: Dict[str, Any]) -> bool:
                 zakaznik.get("ADRESA3"), 
                 zakaznik.get("PSC"), 
                 zakaznik.get("DIC"), 
-                zakaznik.get("ICO")
+                clean_ico(zakaznik.get("ICO"))
             ),
         )
         conn.commit(); conn.close()
         return True
     except Exception: return False
 
-def get_objects_from_db(ico: str) -> List[str]:
-    if not os.path.exists(DB_PATH): return []
+def get_objects_from_db(ico: Any) -> List[str]:
+    ico_clean = clean_ico(ico)
+    if not os.path.exists(DB_PATH) or not ico_clean: return []
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT nazev_objektu FROM objekty WHERE ico = ? ORDER BY nazev_objektu", (str(ico),))
+        cur.execute("SELECT nazev_objektu FROM objekty WHERE ico = ? ORDER BY nazev_objektu", (ico_clean,))
         rows = cur.fetchall()
         conn.close()
         return [row[0] for row in rows]
     except Exception: return []
 
-def add_object_to_db(ico: str, nazev_objektu: str) -> bool:
+def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
+    ico_clean = clean_ico(ico)
+    if not ico_clean or not nazev_objektu.strip(): return False
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("INSERT OR IGNORE INTO objekty (ico, nazev_objektu) VALUES (?, ?)", (str(ico), nazev_objektu.strip()))
+        cur.execute("INSERT OR IGNORE INTO objekty (ico, nazev_objektu) VALUES (?, ?)", (ico_clean, nazev_objektu.strip()))
         conn.commit(); conn.close()
         return True
     except Exception: return False
@@ -330,7 +358,6 @@ class UrbaneKPDF(FPDF):
         reg_font = next((f for f in font_paths if os.path.exists(f)), None)
         bold_font = next((f for f in bold_paths if os.path.exists(f)), None)
         
-        # Záchrana pro Cloud (Linux) - automatické stažení fontu s českou diakritikou
         if not reg_font or not bold_font:
             roboto_reg = "Roboto-Regular.ttf"
             roboto_bold = "Roboto-Bold.ttf"
@@ -400,7 +427,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         v = d.get(key, "")
         return "" if pd.isna(v) or str(v).lower() in ["nan", "none", "null"] else str(v).strip()
 
-    # HLAVIČKA DL
     y_dl = pdf.get_y()
     pdf.set_font(pismo, "B", 12)
     pdf.cell(50, 5, "DODACÍ LIST")
@@ -478,9 +504,8 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(30, 6, f"{fmt_tot(total_sum)} Kč", align="R", ln=True)
     pdf.ln(12)
 
-    # SESTAVENÍ ADRESY (Lokální logika W-SERVIS)
     firma = get_safe_str(zakaznik, 'FIRMA')
-    ico = get_safe_str(zakaznik, 'ICO')
+    ico = clean_ico(zakaznik.get('ICO'))
     dic = get_safe_str(zakaznik, 'DIC')
     
     if not firma or firma == ico:
@@ -555,7 +580,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 24.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 24.1 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -566,7 +591,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - HLAVNÍ NAVIGACE A OBSAH
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Master v24.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Master v24.1", layout="wide", page_icon="🛡️")
 
 def load_all_customers() -> Optional[pd.DataFrame]:
     if not os.path.exists(DB_PATH): return None
@@ -592,23 +617,28 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         st.divider()
         
         if df_customers is not None:
-            # Chytrá roletka pro vyhledávání
+            # Očištění databáze pro bezpečné fungování roletky
             filt = df_customers.copy()
             filt["FIRMA"] = filt["FIRMA"].fillna("Neznámý název")
+            # Zajištění čistého IČO pro vyhledávání
+            filt["clean_ico"] = filt["ICO"].apply(clean_ico)
+            
+            # Odstranění přesných duplicit, aby roletka nepadala
+            filt = filt.drop_duplicates(subset=["clean_ico", "FIRMA"])
             filt = filt.sort_values(by="FIRMA", key=lambda s: s.astype(str).str.lower())
 
             if not filt.empty:
                 def format_cust(row):
                     f = str(row.get('FIRMA', '')).strip()
-                    i = str(row.get('ICO', '')).strip()
-                    if not f or f.lower() == "nan" or f == i: f = f"Neznámý název"
+                    i = str(row.get('clean_ico', '')).strip()
+                    if not f or f.lower() == "nan" or f == i: f = "Neznámý název"
                     return f"{f}  |  IČO: {i}"
 
                 opts = filt.apply(format_cust, axis=1).tolist()
 
                 default_idx = None
                 if st.session_state.vybrany_zakaznik:
-                    curr_ico = str(st.session_state.vybrany_zakaznik.get("ICO", "")).strip()
+                    curr_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO", ""))
                     for idx_opt, opt in enumerate(opts):
                         if f"IČO: {curr_ico}" in opt:
                             default_idx = idx_opt
@@ -618,20 +648,19 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     "🔍 Vyhledat odběratele (pište název nebo IČO):",
                     options=opts,
                     index=default_idx if default_idx is not None else 0,
-                    help="Vyhledává se POUZE ve vaší lokální W-SERVIS databázi (nevyžaduje internet)."
+                    help="Vyhledává se POUZE ve vaší lokální databázi W-SERVIS."
                 )
                 
                 idx = opts.index(sel)
                 curr = filt.iloc[idx].to_dict()
 
-                if (st.session_state.vybrany_zakaznik is None or st.session_state.vybrany_zakaznik.get("ICO") != curr.get("ICO")):
-                    ico_val = str(curr.get("ICO", "")).strip()
+                if (st.session_state.vybrany_zakaznik is None or clean_ico(st.session_state.vybrany_zakaznik.get("ICO")) != clean_ico(curr.get("ICO"))):
+                    ico_val = clean_ico(curr.get("ICO"))
                     
-                    with st.spinner("Načítám data zákazníka z lokální databáze..."):
+                    with st.spinner("Načítám detaily zákazníka z lokální databáze..."):
                         if not validate_ico(ico_val):
                             st.warning(f"Upozornění: Neplatné IČO ({ico_val})")
                         
-                        # Čteme data POUZE z lokální databáze / CSV (Žádný ARES)
                         local_data = build_form_data_from_customer(ico_val)
                         if local_data:
                             curr.update(local_data)
@@ -645,7 +674,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         objekty_text = ""
         
         if st.session_state.vybrany_zakaznik:
-            aktualni_ico = st.session_state.vybrany_zakaznik.get("ICO")
+            aktualni_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO"))
             ulozene_objekty = get_objects_from_db(aktualni_ico)
             
             if ulozene_objekty:
@@ -669,7 +698,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
     # --- MAIN AREA PRO DL ---
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 24.0 | 100% Offline Databáze zákazníků | Žádné prodlevy")
+    st.caption("Verze 24.1 | 100% Offline s opravou Excel formátování | Plná stabilita")
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
 
