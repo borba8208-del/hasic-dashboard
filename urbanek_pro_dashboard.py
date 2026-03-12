@@ -4,6 +4,7 @@ import time
 import datetime
 import unicodedata
 import sqlite3
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
@@ -57,9 +58,9 @@ FIRMA_VLASTNI: Dict[str, Any] = {
     "ico": "60835265",
     "dic": "CZ5706281691",
     "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
-    "telefony": "608409036 - 777664768",
+    "telefony": "608 409 036, 777 664 768",
     "email": "schranka@hasic-servis.com",
-    "web": "http://www.hasic-servis.com",
+    "web": "www.hasic-servis.com",
     "certifikace": "TÜV NORD Czech",
 }
 
@@ -111,7 +112,7 @@ if "loaded_ico" not in st.session_state: st.session_state.loaded_ico = None
 if "evidence_df" not in st.session_state: st.session_state.evidence_df = pd.DataFrame()
 
 # ==========================================
-# 2. INTELIGENTNÍ IMPORT DATABÁZÍ VČETNĚ UNIVERZÁLNÍHO XML
+# 2. INTELIGENTNÍ IMPORT DATABÁZÍ
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -122,25 +123,18 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
-    """
-    Univerzální W-SERVIS datový skener:
-    Hledá prioritně Excel, následně se pokusí přečíst a zploštit XML, jako poslední záchrana je CSV.
-    """
     excel_path = base_path + ".xlsx"
     xml_path = base_path + ".xml"
     csv_path = base_path + ".csv"
     
-    # 1. Zkusí načíst Excel (.xlsx)
     if os.path.exists(excel_path):
         try: return pd.read_excel(excel_path)
         except Exception: pass
 
-    # 2. Zkusí načíst XML (.xml) - Nový univerzální XML dekodér pro W-SERVIS tabulky
     if os.path.exists(xml_path) and os.path.getsize(xml_path) > 0:
         try:
             import xml.etree.ElementTree as ET
             xml_data = None
-            # Nalezení správného českého kódování
             for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
                 try:
                     with open(xml_path, 'r', encoding=enc) as f:
@@ -149,16 +143,14 @@ def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
                 except UnicodeDecodeError: continue
             
             if xml_data:
-                # Očistíme XML hlavičku, která může způsobovat pády parseru
                 xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
                 root = ET.fromstring(xml_data)
                 
                 rows = []
-                # Vyhledá všechny záznamy (typicky tag <polozka>)
                 for pol in root.findall('.//polozka'):
                     row_data = {}
                     for child in pol:
-                        if len(child) > 0: # Zploštění vnořených tagů (např. <ADRESA><FIRMA>...)
+                        if len(child) > 0: 
                             for subchild in child:
                                 row_data[subchild.tag.lower()] = subchild.text if subchild.text else ""
                         else:
@@ -167,10 +159,8 @@ def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
                 
                 if rows:
                     return pd.DataFrame(rows)
-        except Exception: 
-            pass # Pokud selže XML, propadne to na záchranné CSV
+        except Exception: pass
             
-    # 3. Zkusí načíst staré CSV (.csv)
     if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0: 
         for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
             try:
@@ -191,7 +181,6 @@ def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
-        # Import všech menších ceníků a kategorií
         for ui_key, name in CATEGORY_MAP.items():
             base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
@@ -226,7 +215,6 @@ def import_all_ceniky() -> str:
             except Exception as e:
                 log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
-        # Import centrálního souboru zboží / expimp (nyní s plnou XML podporou!)
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data(expimp_base)
         if df_exp is not None:
@@ -259,7 +247,6 @@ def import_all_ceniky() -> str:
                     log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
                 except Exception as e: pass
 
-        # Import zákazníků (již řešen přes univerzální XML zplošťovač v `safe_read_data`)
         xml_path = os.path.join(CSV_FOLDER, "obchpartner.xml")
         if os.path.exists(xml_path):
             try:
@@ -345,7 +332,7 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
     return items
 
 # ==========================================
-# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (OFFLINE)
+# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ & OBJEKTŮ
 # ==========================================
 def validate_ico(ico: Any) -> bool:
     ico_str = clean_ico(ico)
@@ -418,37 +405,32 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
         return True
     except Exception: return False
 
+def load_czech_font():
+    """Garantované stažení českého fontu, pokud na serveru chybí."""
+    if not os.path.exists("dejavu.ttf") or not os.path.exists("dejavu-bold.ttf"):
+        try:
+            if not os.path.exists("dejavu.ttf"):
+                urllib.request.urlretrieve("https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans.ttf", "dejavu.ttf")
+            if not os.path.exists("dejavu-bold.ttf"):
+                urllib.request.urlretrieve("https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans-Bold.ttf", "dejavu-bold.ttf")
+        except Exception:
+            pass
+
 # ==========================================
-# 4. PDF ENGINE (CORPORATE GRID)
+# 4. PDF ENGINE (ABSOLUTNÍ GEOMETRIE)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
         super().__init__()
         self.pismo_ok = False
         self.pismo_name = "ArialCZ"
-        font_paths = ["arial.ttf", "ARIAL.TTF", "C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/ARIAL.TTF"]
-        bold_paths = ["arialbd.ttf", "ARIALBD.TTF", "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/ARIALBD.TTF"]
         
-        reg_font = next((f for f in font_paths if os.path.exists(f)), None)
-        bold_font = next((f for f in bold_paths if os.path.exists(f)), None)
+        load_czech_font()
         
-        if not reg_font or not bold_font:
-            dejavu_reg = "DejaVuSans.ttf"
-            dejavu_bold = "DejaVuSans-Bold.ttf"
-            if not os.path.exists(dejavu_reg):
-                try:
-                    import urllib.request
-                    urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans.ttf", dejavu_reg)
-                    urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans-Bold.ttf", dejavu_bold)
-                except Exception: pass
-            if os.path.exists(dejavu_reg) and os.path.exists(dejavu_bold):
-                reg_font = dejavu_reg
-                bold_font = dejavu_bold
-
-        if reg_font and bold_font:
+        if os.path.exists("dejavu.ttf") and os.path.exists("dejavu-bold.ttf"):
             try:
-                self.add_font(self.pismo_name, "", reg_font)
-                self.add_font(self.pismo_name, "B", bold_font)
+                self.add_font(self.pismo_name, "", "dejavu.ttf")
+                self.add_font(self.pismo_name, "B", "dejavu-bold.ttf")
                 self.pismo_ok = True
             except Exception:
                 self.pismo_ok = False
@@ -464,16 +446,18 @@ class UrbaneKPDF(FPDF):
         self.cell(0, 5, FIRMA_VLASTNI["název"], ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.set_font(pismo, "", 9)
-        self.cell(0, 4, f"{FIRMA_VLASTNI['sídlo']}", ln=True)
+        
+        self.cell(0, 4, f"Sídlo: {FIRMA_VLASTNI['sídlo']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.cell(0, 4, f"IČO: {FIRMA_VLASTNI['ico']}   DIČ: {FIRMA_VLASTNI['dic']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.cell(0, 4, f"{FIRMA_VLASTNI['zápis']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         
+        # Opravená hlavička kontaktů (čistý tvar)
         self.cell(0, 4, f"Mobil: {FIRMA_VLASTNI['telefony']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
-        self.cell(0, 4, f"Email: {FIRMA_VLASTNI['email']} | WEB: {FIRMA_VLASTNI['web']}", ln=True)
+        self.cell(0, 4, f"E-mail: {FIRMA_VLASTNI['email']}  |  WEB: {FIRMA_VLASTNI['web']}", ln=True)
         self.line(10, 35, 200, 35)
         self.ln(5)
 
@@ -513,6 +497,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.set_font(pismo, "", 9)
     pdf.cell(50, 5, "(práce, zboží, materiál)")
 
+    # HLAVIČKOVÁ TABULKA
     pdf.set_xy(110, y_dl)
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
@@ -528,6 +513,13 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf.cell(40, 6, technik, border=1, align="C", ln=True)
     pdf.ln(8)
 
+    # GEOMETRICKÁ KRESBA TABULEK
+    w_name = 85
+    w_cena = 17
+    w_col = 8
+    w_ks = 15
+    w_celk = 33
+
     def draw_category(cat_num_title: str, item_cats: List[str]):
         cat_items = [[k, v] for k, v in items_dict.items() if v["cat"] in item_cats and v.get("q", 0) > 0]
         if not cat_items: return 0.0
@@ -538,47 +530,47 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         
         pdf.set_fill_color(240, 240, 240)
         pdf.set_font(pismo, "B", 8)
-        pdf.cell(85, 5, " Název položky", border=1, fill=True)
-        pdf.cell(17, 5, "Cena/ks", border=1, align="C", fill=True)
-        pdf.cell(8, 5, "O1", border=1, align="C", fill=True)
-        pdf.cell(8, 5, "O2", border=1, align="C", fill=True)
-        pdf.cell(8, 5, "O3", border=1, align="C", fill=True)
-        pdf.cell(8, 5, "O4", border=1, align="C", fill=True)
-        pdf.cell(8, 5, "O5", border=1, align="C", fill=True)
-        pdf.cell(15, 5, "ks/výk", border=1, align="C", fill=True)
-        pdf.cell(33, 5, "CELKEM (Kč)", border=1, align="C", fill=True, ln=True)
+        pdf.cell(w_name, 5, " Název položky", border=1, fill=True)
+        pdf.cell(w_cena, 5, "Cena/ks", border=1, align="C", fill=True)
+        pdf.cell(w_col, 5, "O1", border=1, align="C", fill=True)
+        pdf.cell(w_col, 5, "O2", border=1, align="C", fill=True)
+        pdf.cell(w_col, 5, "O3", border=1, align="C", fill=True)
+        pdf.cell(w_col, 5, "O4", border=1, align="C", fill=True)
+        pdf.cell(w_col, 5, "O5", border=1, align="C", fill=True)
+        pdf.cell(w_ks, 5, "ks/výk", border=1, align="C", fill=True)
+        pdf.cell(w_celk, 5, "CELKEM (Kč)", border=1, align="C", fill=True, ln=True)
 
         cat_total = 0.0
         pdf.set_font(pismo, "", 9)
         for name, vals in cat_items:
-            q1 = vals.get("q1", 0)
-            q2 = vals.get("q2", 0)
-            q3 = vals.get("q3", 0)
-            q4 = vals.get("q4", 0)
-            q5 = vals.get("q5", 0)
+            q1 = vals.get("q1", 0); q2 = vals.get("q2", 0); q3 = vals.get("q3", 0); q4 = vals.get("q4", 0); q5 = vals.get("q5", 0)
             qty = vals.get("q", 0)
             price = vals.get("p", 0)
             
             line_total = qty * price
             cat_total += line_total
             
-            name_disp = " " + name[:58] + ("..." if len(name) > 58 else "")
+            # Bezpečné utnutí dlouhých názvů pro dodržení geometrie mřížky
+            if len(name) > 46: name_disp = " " + name[:43] + "..."
+            else: name_disp = " " + name
             
-            pdf.cell(85, 6, name_disp, border=1)
-            pdf.cell(17, 6, fmt_price(price), border=1, align="R")
-            pdf.cell(8, 6, fmt_q(q1), border=1, align="C")
-            pdf.cell(8, 6, fmt_q(q2), border=1, align="C")
-            pdf.cell(8, 6, fmt_q(q3), border=1, align="C")
-            pdf.cell(8, 6, fmt_q(q4), border=1, align="C")
-            pdf.cell(8, 6, fmt_q(q5), border=1, align="C")
-            pdf.cell(15, 6, fmt_q(qty), border=1, align="C")
-            pdf.cell(33, 6, fmt_tot(line_total), border=1, align="R", ln=True)
+            pdf.cell(w_name, 6, name_disp, border=1)
+            pdf.cell(w_cena, 6, fmt_price(price), border=1, align="R")
+            pdf.cell(w_col, 6, fmt_q(q1), border=1, align="C")
+            pdf.cell(w_col, 6, fmt_q(q2), border=1, align="C")
+            pdf.cell(w_col, 6, fmt_q(q3), border=1, align="C")
+            pdf.cell(w_col, 6, fmt_q(q4), border=1, align="C")
+            pdf.cell(w_col, 6, fmt_q(q5), border=1, align="C")
+            pdf.cell(w_ks, 6, fmt_q(qty), border=1, align="C")
+            pdf.cell(w_celk, 6, fmt_tot(line_total), border=1, align="R", ln=True)
             
         pdf.set_font(pismo, "B", 9)
         pdf.set_fill_color(245, 245, 245)
         nazev_celkem = cat_num_title.split('. ', 1)[-1] if '. ' in cat_num_title else cat_num_title
-        pdf.cell(157, 6, f"CELKEM za {nazev_celkem}: ", border=1, align="R", fill=True)
-        pdf.cell(33, 6, fmt_tot(cat_total), border=1, align="R", fill=True, ln=True)
+        
+        w_sub = w_name + w_cena + (5*w_col) + w_ks
+        pdf.cell(w_sub, 6, f"CELKEM za {nazev_celkem}: ", border=1, align="R", fill=True)
+        pdf.cell(w_celk, 6, fmt_tot(cat_total), border=1, align="R", fill=True, ln=True)
         pdf.ln(4)
         return cat_total
 
@@ -596,12 +588,13 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
     pdf.set_font(pismo, "B", 10)
     pdf.set_fill_color(220, 220, 220)
-    pdf.cell(157, 8, "CELKEM K ÚHRADĚ BEZ DPH: ", border=1, align="R", fill=True)
-    pdf.cell(33, 8, f"{fmt_tot(total_sum)} Kč", border=1, align="R", fill=True, ln=True)
+    w_sub = w_name + w_cena + (5*w_col) + w_ks
+    pdf.cell(w_sub, 8, "CELKEM K ÚHRADĚ BEZ DPH: ", border=1, align="R", fill=True)
+    pdf.cell(w_celk, 8, f"{fmt_tot(total_sum)} Kč", border=1, align="R", fill=True, ln=True)
     pdf.ln(8)
 
     # ----------------------------------------------
-    # PATIČKA - ODBĚRATEL, MAPA OBJEKTŮ A PODPISY
+    # DOKONALÁ GEOMETRIE PATIČKY (ODBĚRATEL + OBJEKTY)
     # ----------------------------------------------
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
@@ -626,54 +619,66 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
-    pdf.cell(95, 6, " Odběratel:", border=1, fill=True)
-    pdf.cell(95, 6, " Umístění kontrolovaných HP/PV v objektech:", border=1, fill=True, ln=True)
+    pdf.cell(95, 6, " Odběratel:", border="L T R", fill=True)
+    pdf.cell(95, 6, " Umístění kontrolovaných HP/PV v objektech:", border="L T R", fill=True, ln=True)
 
     pdf.set_font(pismo, "", 9)
-    pdf.cell(95, 5, f"  Firma:  {firma[:45]}", border="L R")
-    pdf.cell(95, 5, f"  1:  {objekty_map.get(1, '')[:45]}", border="L R", ln=True)
     
-    pdf.cell(95, 5, f"  Ulice:  {adr_line1[:45]}", border="L R")
-    pdf.cell(95, 5, f"  2:  {objekty_map.get(2, '')[:45]}", border="L R", ln=True)
+    # Kreslení pevných boxů pro naprostou geometrickou přesnost
+    y_odb = pdf.get_y()
+    pdf.rect(10, y_odb, 95, 25)
+    pdf.rect(105, y_odb, 95, 25)
     
-    pdf.cell(95, 5, f"  Město:  {adr_line2[:45]}", border="L R")
-    pdf.cell(95, 5, f"  3:  {objekty_map.get(3, '')[:45]}", border="L R", ln=True)
+    pdf.set_xy(10, y_odb)
+    pdf.cell(95, 5, f"  Firma: {firma[:45]}", ln=False)
+    pdf.cell(95, 5, f"  O1: {objekty_map.get(1, '')[:45]}", ln=True)
     
-    pdf.cell(95, 5, f"  IČO:    {ico}", border="L R")
-    pdf.cell(95, 5, f"  4:  {objekty_map.get(4, '')[:45]}", border="L R", ln=True)
+    pdf.cell(95, 5, f"  Ulice: {adr_line1[:45]}", ln=False)
+    pdf.cell(95, 5, f"  O2: {objekty_map.get(2, '')[:45]}", ln=True)
     
-    pdf.cell(95, 6, f"  DIČ:    {dic}", border="L B R")
-    pdf.cell(95, 6, f"  5:  {objekty_map.get(5, '')[:45]}", border="L B R", ln=True)
-            
-    pdf.ln(4)
+    pdf.cell(95, 5, f"  Město: {adr_line2[:45]}", ln=False)
+    pdf.cell(95, 5, f"  O3: {objekty_map.get(3, '')[:45]}", ln=True)
+    
+    pdf.cell(95, 5, f"  IČO: {ico}", ln=False)
+    pdf.cell(95, 5, f"  O4: {objekty_map.get(4, '')[:45]}", ln=True)
+    
+    pdf.cell(95, 5, f"  DIČ: {dic}", ln=False)
+    pdf.cell(95, 5, f"  O5: {objekty_map.get(5, '')[:45]}", ln=True)
 
+    pdf.set_y(y_odb + 25)
+    pdf.ln(3)
+
+    # ----------------------------------------------
+    # ZÁZNAM O KONTROLE A PŘEDÁNÍ (PODPISOVÁ MŘÍŽKA)
+    # ----------------------------------------------
     pdf.set_font(pismo, "B", 9)
     pdf.set_fill_color(235, 235, 235)
     pdf.cell(190, 6, " Záznam o kontrole a předání:", border=1, fill=True, ln=True)
 
     y_sig = pdf.get_y()
-    pdf.rect(10, y_sig, 190, 24)
+    pdf.rect(10, y_sig, 95, 26)
+    pdf.rect(105, y_sig, 95, 26)
 
     pdf.set_xy(10, y_sig + 2)
     pdf.set_font(pismo, "B", 8)
     pdf.cell(95, 5, "  Za zhotovitele (Předal):", ln=False)
     pdf.cell(95, 5, "  Za odběratele (Převzal):", ln=True)
 
+    pdf.set_font(pismo, "", 9)
     pdf.cell(95, 5, "  Kontrolní technik: Tomáš Urbánek", ln=False)
     pdf.cell(95, 5, "  Jméno hůlkovým písmem:", ln=True)
 
     pdf.cell(95, 5, "  Odborně způsobilá osoba v PO: Ilja Urbánek", ln=False)
-    pdf.cell(95, 5, "  ...........................................................", ln=True)
+    pdf.cell(95, 5, "  ...............................................................", ln=True)
 
-    pdf.ln(1)
-    pdf.cell(95, 5, "  ...........................................................", ln=False)
-    pdf.cell(95, 5, "  ...........................................................", ln=True)
+    pdf.ln(2)
+    pdf.cell(95, 5, "  ...............................................................", ln=False)
+    pdf.cell(95, 5, "  ...............................................................", ln=True)
 
-    # OPRAVA: Odstraněna kurzíva ("I"), nahrazena standardním fontem (""), aby PDF tiskárna nepadala
     pdf.set_font(pismo, "", 7)
     pdf.cell(95, 3, "   Podpisy a razítka zhotovitele", ln=False)
     pdf.cell(95, 3, "   Podpis a razítko odběratele", ln=True)
-    pdf.set_y(y_sig + 26)
+    pdf.set_y(y_sig + 28)
     
     if vyrazene_kody:
         pdf.ln(2)
@@ -687,7 +692,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
     pdf.ln(4)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 35.0 Universal XML / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 36.0 Geometric Perfection / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -698,7 +703,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v33.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v36.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -781,7 +786,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                 aktualni_ico = clean_ico(curr.get("ICO"))
                 ulozene_objekty = get_objects_from_db(aktualni_ico)
                 
-                # --- NOVINKA: Automatická nabídka adresy klienta jako objektu ---
                 ul_kl = str(curr.get("ULICE", "")).strip()
                 cp_kl = str(curr.get("CP", "")).strip()
                 co_kl = str(curr.get("CO", "")).strip()
@@ -827,7 +831,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 33.0 Corporate Strict | Sjednocená terminologie (Kontroly) a nová PDF Mřížka")
+    st.caption("Verze 36.0 Geometric Perfection | Extrémní přesnost výstupu a bezpečné fonty")
 
     st.markdown("### 🏢 Umístění a rozřazení objektů (O1 - O5)")
     st.info("Zvolte si, pro jaké objekty nyní tvoříte Dodací list. Tyto objekty se v PDF propíšou pod čísly 1 až 5. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-`.")
