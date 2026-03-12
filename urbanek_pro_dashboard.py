@@ -417,32 +417,38 @@ def load_czech_font():
             pass
 
 # ==========================================
-# 4. PDF ENGINE (ABSOLUTNÍ GEOMETRIE)
+# 4. PDF ENGINE (UNICODE SHIELD & GEOMETRIE)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
         super().__init__()
         self.pismo_ok = False
-        self.pismo_name = "ArialCZ"
+        self.pismo_name = "DejaVu" # Přejmenováno pro jednoznačnost Unicode fontu
         
         load_czech_font()
         
+        # PŘÍSNÁ UNICODE INICIALIZACE - Brání pádu při kreslení hlavičky
         if os.path.exists("dejavu.ttf") and os.path.exists("dejavu-bold.ttf"):
             try:
-                self.add_font(self.pismo_name, "", "dejavu.ttf")
-                self.add_font(self.pismo_name, "B", "dejavu-bold.ttf")
+                self.add_font(self.pismo_name, "", "dejavu.ttf", uni=True)
+                self.add_font(self.pismo_name, "B", "dejavu-bold.ttf", uni=True)
                 self.pismo_ok = True
+                self.set_font(self.pismo_name, "", 9) # Bezpečný základ
             except Exception:
                 self.pismo_ok = False
 
     def header(self) -> None:
+        # Pokud není český font, selháváme na výchozí
         pismo = self.pismo_name if self.pismo_ok else "helvetica"
+        
+        # Pojistka: Nastavíme font ještě před psaním čehokoliv
+        self.set_font(pismo, "B", 12)
+        
         if os.path.exists("logo.png"):
             self.image("logo.png", x=10, y=8, w=22)
             self.set_xy(38, 10)
         else: self.set_xy(10, 10)
             
-        self.set_font(pismo, "B", 12)
         self.cell(0, 5, FIRMA_VLASTNI["název"], ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.set_font(pismo, "", 9)
@@ -454,7 +460,6 @@ class UrbaneKPDF(FPDF):
         self.cell(0, 4, f"{FIRMA_VLASTNI['zápis']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         
-        # Opravená hlavička kontaktů (čistý tvar)
         self.cell(0, 4, f"Mobil: {FIRMA_VLASTNI['telefony']}", ln=True)
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.cell(0, 4, f"E-mail: {FIRMA_VLASTNI['email']}  |  WEB: {FIRMA_VLASTNI['web']}", ln=True)
@@ -468,6 +473,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     pdf = UrbaneKPDF()
     pismo = pdf.pismo_name if pdf.pismo_ok else "helvetica"
     pdf.add_page()
+    pdf.set_font(pismo, "", 9) # Bezpečný restart po add_page
     
     def fmt_price(num):
         if num == 0: return "0,00"
@@ -550,7 +556,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             line_total = qty * price
             cat_total += line_total
             
-            # Bezpečné utnutí dlouhých názvů pro dodržení geometrie mřížky
             if len(name) > 46: name_disp = " " + name[:43] + "..."
             else: name_disp = " " + name
             
@@ -624,7 +629,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 
     pdf.set_font(pismo, "", 9)
     
-    # Kreslení pevných boxů pro naprostou geometrickou přesnost
     y_odb = pdf.get_y()
     pdf.rect(10, y_odb, 95, 25)
     pdf.rect(105, y_odb, 95, 25)
@@ -692,7 +696,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(190, 4, f"  Kód {kod}: {text_duvodu}", border=b_style, ln=True)
 
     pdf.ln(4)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 36.0 Geometric Perfection / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 36.1 Unicode Shield / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -703,7 +707,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v36.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v36.1", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -757,6 +761,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             filt = filt.sort_values(by="FIRMA", key=lambda s: s.astype(str).str.lower())
 
             if not filt.empty:
+                # OPRAVA ROLETKY ZÁKAZNÍKŮ: Zobrazuje se celá dlouhá firma bez oříznutí
                 def format_cust(row):
                     f = str(row.get('FIRMA', '')).strip()
                     i = str(row.get('clean_ico', '')).strip()
