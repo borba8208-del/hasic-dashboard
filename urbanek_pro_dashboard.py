@@ -11,16 +11,6 @@ import pandas as pd
 from fpdf import FPDF
 
 # ==========================================
-# UNIVERZÁLNÍ ČISTIČ IČO (Oprava problému s Excelem .0)
-# ==========================================
-def clean_ico(ico_val: Any) -> str:
-    """Očistí IČO od desetinných míst z Pandas a prázdných znaků."""
-    s = str(ico_val).strip()
-    if s.lower() in ['nan', 'none', 'null', '']: 
-        return ""
-    return s.split('.')[0]
-
-# ==========================================
 # ČÍSELNÍKY DLE W-SERVIS DATABÁZE
 # ==========================================
 DUVODY_VYRAZENI = {
@@ -95,17 +85,14 @@ def init_db():
 
 init_db()
 
-if "data_zakazky" not in st.session_state:
-    st.session_state.data_zakazky = {}
-if "dynamic_items" not in st.session_state:
-    st.session_state.dynamic_items = {}
-if "vybrany_zakaznik" not in st.session_state:
-    st.session_state.vybrany_zakaznik = None
-if "vyrazene_kody" not in st.session_state:
-    st.session_state.vyrazene_kody = []
+# Paměť stavu
+if "data_zakazky" not in st.session_state: st.session_state.data_zakazky = {}
+if "dynamic_items" not in st.session_state: st.session_state.dynamic_items = {}
+if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik = None
+if "vyrazene_kody" not in st.session_state: st.session_state.vyrazene_kody = []
 
 # ==========================================
-# 2. CENÍKY – PŘÍSNÁ KONTROLA A IMPORT EXPORTU
+# 2. INTELIGENTNÍ IMPORT DATABÁZÍ
 # ==========================================
 def normalize_category_to_table(cat_key: str) -> str:
     if not cat_key: return "cenik_ostatni"
@@ -116,18 +103,13 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
-    """Univerzální čtečka: Preferuje bezproblémový Excel (.xlsx), záložně bere CSV."""
     excel_path = base_path + ".xlsx"
     csv_path = base_path + ".csv"
     
-    # 1. Nejprve zkusí načíst Excel (Zaručeně správná čeština)
     if os.path.exists(excel_path):
-        try:
-            return pd.read_excel(excel_path)
-        except Exception:
-            pass
+        try: return pd.read_excel(excel_path)
+        except Exception: pass
             
-    # 2. Záložní plán pro staré CSV
     if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0: 
         for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250", "iso-8859-2", "latin-1"):
             try:
@@ -135,14 +117,14 @@ def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
                 if len(df.columns) == 1 and "," in df.columns[0]:
                     df = pd.read_csv(csv_path, sep=",", encoding=enc, on_bad_lines='skip')
                 return df
-            except Exception:
-                continue
+            except Exception: continue
     return None
 
 def import_all_ceniky() -> str:
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
+        # Import mapovaných kategorií a speciální logika pro "Zboží Formulář"
         for ui_key, name in CATEGORY_MAP.items():
             base_path = os.path.join(CSV_FOLDER, name)
             table_name = normalize_category_to_table(ui_key)
@@ -150,7 +132,13 @@ def import_all_ceniky() -> str:
             df = safe_read_data(base_path)
             if df is None: continue
 
+            # Inteligentní přejmenování sloupců z W-SERVIS exportů (zbozi_nazev -> nazev)
             df.columns = [str(col).strip().lower() for col in df.columns]
+            if 'zbozi_nazev' in df.columns: df.rename(columns={'zbozi_nazev': 'nazev'}, inplace=True)
+            if 'zbozi_cena' in df.columns: df.rename(columns={'zbozi_cena': 'cena'}, inplace=True)
+            if 'ukon_popis' in df.columns: df.rename(columns={'ukon_popis': 'nazev'}, inplace=True)
+            if 'ukon_cena' in df.columns: df.rename(columns={'ukon_cena': 'cena'}, inplace=True)
+
             if "nazev" not in df.columns or "cena" not in df.columns:
                 continue
 
@@ -174,41 +162,40 @@ def import_all_ceniky() -> str:
             except Exception as e:
                 log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
+        # Import velkého expimp souboru
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data(expimp_base)
         if df_exp is not None:
             df_exp.columns = [str(c).strip().lower().replace('"', '') for c in df_exp.columns]
             name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
-                
-                price_col = None
-                if 'cena1' in df_exp.columns: price_col = 'cena1'
-                elif 'cena_prodejni' in df_exp.columns: price_col = 'cena_prodejni'
-                else:
-                    for col in df_exp.columns:
-                        if 'cena' in col and 'prum' not in col and 'posl' not in col and 'nakup' not in col:
-                            price_col = col
-                            break
-                
-                if name_col:
-                    df_clean = pd.DataFrame()
-                    df_clean['nazev'] = df_exp[name_col].astype(str).str.strip()
-                    
-                    if price_col:
-                        df_clean['cena'] = df_exp[price_col].astype(str).str.replace(r"\s+", "", regex=True).str.replace(",", ".", regex=False)
-                        df_clean['cena'] = pd.to_numeric(df_clean['cena'], errors="coerce").fillna(0.0)
-                    else:
-                        df_clean['cena'] = 0.0
+            
+            price_col = None
+            if 'cena1' in df_exp.columns: price_col = 'cena1'
+            elif 'cena_prodejni' in df_exp.columns: price_col = 'cena_prodejni'
+            else:
+                for col in df_exp.columns:
+                    if 'cena' in col and 'prum' not in col and 'posl' not in col and 'nakup' not in col:
+                        price_col = col
+                        break
+            
+            if name_col:
+                df_clean = pd.DataFrame()
+                df_clean['nazev'] = df_exp[name_col].astype(str).str.strip()
+                if price_col:
+                    df_clean['cena'] = df_exp[price_col].astype(str).str.replace(r"\s+", "", regex=True).str.replace(",", ".", regex=False)
+                    df_clean['cena'] = pd.to_numeric(df_clean['cena'], errors="coerce").fillna(0.0)
+                else: df_clean['cena'] = 0.0
 
-                    df_clean = df_clean.dropna(subset=['nazev'])
-                    df_clean = df_clean[df_clean['nazev'] != "nan"]
-                    df_clean = df_clean[df_clean['nazev'] != ""]
-                    df_clean = df_clean.drop_duplicates(subset=["nazev"], keep="first")
-                    
-                    try:
-                        df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
-                        log_messages.append(f"📦 ÚSPĚCH: Velký export expimp úspěšně spárován! Do katalogu přidáno {len(df_clean)} položek.")
-                    except Exception as e:
-                        log_messages.append(f"❌ expimp: Chyba při zápisu – {e}")
+                df_clean = df_clean.dropna(subset=['nazev'])
+                df_clean = df_clean[df_clean['nazev'] != "nan"]
+                df_clean = df_clean[df_clean['nazev'] != ""]
+                df_clean = df_clean.drop_duplicates(subset=["nazev"], keep="first")
+                
+                try:
+                    df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
+                    log_messages.append(f"📦 ÚSPĚCH: Export expimp úspěšně spárován! Do katalogu přidáno {len(df_clean)} položek.")
+                except Exception as e:
+                    log_messages.append(f"❌ expimp: Chyba při zápisu – {e}")
 
     finally:
         connection.close()
@@ -248,12 +235,16 @@ def get_items_from_db(categories: List[str]) -> List[Dict]:
     return items
 
 # ==========================================
-# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (BEZ ARES)
+# 3. LOKÁLNÍ DATABÁZE ZÁKAZNÍKŮ (OFFLINE)
 # ==========================================
+def clean_ico(ico_val: Any) -> str:
+    s = str(ico_val).strip()
+    if s.lower() in ['nan', 'none', 'null', '']: return ""
+    return s.split('.')[0]
+
 def validate_ico(ico: Any) -> bool:
     ico_str = clean_ico(ico)
-    if not ico_str.isdigit() or len(ico_str) != 8:
-        return False
+    if not ico_str.isdigit() or len(ico_str) != 8: return False
     digits = [int(d) for d in ico_str]
     weights = [8, 7, 6, 5, 4, 3, 2]
     s = sum(d * w for d, w in zip(digits[:7], weights))
@@ -265,25 +256,17 @@ def load_local_customers() -> Optional[pd.DataFrame]:
     base_path = os.path.join("data", "ceniky", "zakaznici")
     df = safe_read_data(base_path)
     if df is not None and not df.empty:
-        # Sjednocení názvů sloupců - odolnost proti "IČO", "Ičo", "ICO"
-        def clean_col(c):
-            return str(c).strip().lower().replace("č", "c").replace("ř", "r").replace("š", "s")
+        def clean_col(c): return str(c).strip().lower().replace("č", "c").replace("ř", "r").replace("š", "s")
         df.columns = [clean_col(c) for c in df.columns]
-        
-        # Očistíme samotná data IČO hned při načtení
-        if "ico" in df.columns:
-            df["ico"] = df["ico"].apply(clean_ico)
-            
+        if "ico" in df.columns: df["ico"] = df["ico"].apply(clean_ico)
         return df
     return None
 
 def find_customer_by_ico_local(ico: Any) -> Optional[Dict[str, Any]]:
     ico_clean = clean_ico(ico)
     if not validate_ico(ico_clean): return None
-    
     df = load_local_customers()
     if df is None or "ico" not in df.columns: return None
-    
     row = df[df["ico"] == ico_clean]
     if row.empty: return None
     return row.iloc[0].to_dict()
@@ -355,7 +338,7 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
     except Exception: return False
 
 # ==========================================
-# 4. PDF ENGINE (W-SERVIS PIXEL PERFECT)
+# 4. PDF ENGINE (W-SERVIS ENTERPRISE PERFECT)
 # ==========================================
 class UrbaneKPDF(FPDF):
     def __init__(self) -> None:
@@ -368,7 +351,6 @@ class UrbaneKPDF(FPDF):
         reg_font = next((f for f in font_paths if os.path.exists(f)), None)
         bold_font = next((f for f in bold_paths if os.path.exists(f)), None)
         
-        # 100% Spolehlivá záchrana pro Cloud - font DejaVuSans (garantované ř, č, ž)
         if not reg_font or not bold_font:
             dejavu_reg = "DejaVuSans.ttf"
             dejavu_bold = "DejaVuSans-Bold.ttf"
@@ -377,8 +359,7 @@ class UrbaneKPDF(FPDF):
                     import urllib.request
                     urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans.ttf", dejavu_reg)
                     urllib.request.urlretrieve("https://github.com/matumo/DejaVuSans/raw/master/Fonts/DejaVuSans-Bold.ttf", dejavu_bold)
-                except Exception:
-                    pass
+                except Exception: pass
             if os.path.exists(dejavu_reg) and os.path.exists(dejavu_bold):
                 reg_font = dejavu_reg
                 bold_font = dejavu_bold
@@ -393,16 +374,13 @@ class UrbaneKPDF(FPDF):
 
     def header(self) -> None:
         pismo = self.pismo_name if self.pismo_ok else "helvetica"
-        
         if os.path.exists("logo.png"):
             self.image("logo.png", x=10, y=8, w=22)
             self.set_xy(38, 10)
-        else:
-            self.set_xy(10, 10)
+        else: self.set_xy(10, 10)
             
         self.set_font(pismo, "B", 12)
         self.cell(0, 5, FIRMA_VLASTNI["název"], ln=True)
-        
         self.set_x(38 if os.path.exists("logo.png") else 10)
         self.set_font(pismo, "", 9)
         self.cell(0, 4, f"{FIRMA_VLASTNI['sídlo']}", ln=True)
@@ -431,8 +409,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         if s.endswith("0") and "," in s: return s[:-1]
         return s
 
-    def fmt_tot(num):
-        return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
+    def fmt_tot(num): return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
 
     def get_safe_str(d, key):
         v = d.get(key, "")
@@ -486,7 +463,6 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(30, 5, "", align="R") 
             q_disp = f"{qty:,.2f}".rstrip("0").rstrip(".") if qty % 1 != 0 else f"{int(qty)}"
             pdf.cell(15, 5, q_disp, align="R")
-            
             pdf.cell(30, 5, fmt_tot(line_total), align="R", ln=True)
             
         pdf.ln(1)
@@ -518,9 +494,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     firma = get_safe_str(zakaznik, 'FIRMA')
     ico = clean_ico(zakaznik.get('ICO'))
     dic = get_safe_str(zakaznik, 'DIC')
-    
-    if not firma or firma == ico:
-        firma = f"Neznámý název (IČO: {ico})"
+    if not firma or firma == ico: firma = f"Neznámý název (IČO: {ico})"
 
     ul = get_safe_str(zakaznik, "ULICE")
     cp = get_safe_str(zakaznik, "CP")
@@ -530,20 +504,16 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     if ul and cp:
         adr_line1 = f"{ul} {cp}"
         if co and co != "0": adr_line1 += f"/{co}"
-    elif ul:
-        adr_line1 = ul
-    elif adr1: 
-        adr_line1 = adr1
-    else:
-        adr_line1 = ""
+    elif ul: adr_line1 = ul
+    elif adr1: adr_line1 = adr1
+    else: adr_line1 = ""
         
     ob = get_safe_str(zakaznik, "ADRESA3")
     ps = get_safe_str(zakaznik, "PSC")
     adr_line2 = f"{ps} {ob}".strip()
 
     objekty_list = [o.strip() for o in objekty.split('\n') if o.strip()]
-    while len(objekty_list) < 4:
-        objekty_list.append("") 
+    while len(objekty_list) < 4: objekty_list.append("") 
 
     pdf.set_font(pismo, "B", 9)
     pdf.cell(70, 5, "Odběratel:", ln=False)
@@ -565,7 +535,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
     
     pdf.cell(70, 5, f"IČO: {ico}  DIČ: {dic}", ln=False)
     pdf.cell(75, 5, objekty_list[3], ln=False)
-    pdf.cell(45, 5, "", ln=True)
+    pdf.cell(45, 5, ".............................................", ln=True)
     
     if len(objekty_list) > 4:
         for obj in objekty_list[4:]:
@@ -591,7 +561,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.cell(0, 3, f"  Kód {kod} - {text_duvodu}", ln=True)
 
     pdf.ln(3)
-    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 24.1 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+    wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 25.0 Enterprise / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
     pdf.cell(0, 4, wservis_stamp, ln=True)
 
     try: 
@@ -600,9 +570,23 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
         return None
 
 # ==========================================
-# 5. STREAMLIT UI - HLAVNÍ NAVIGACE A OBSAH
+# 5. STREAMLIT UI - ENTERPRISE EDITION
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Master v24.1", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v25.0", layout="wide", page_icon="🛡️")
+
+# Custom CSS for Premium Look
+st.markdown("""
+<style>
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #f0f2f6; border-radius: 4px 4px 0 0; padding: 10px 20px;
+    }
+    .stTabs [aria-selected="true"] { background-color: #ff4b4b; color: white; font-weight: bold; }
+    .cart-box {
+        background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #ff4b4b; margin-top: 15px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 def load_all_customers() -> Optional[pd.DataFrame]:
     if not os.path.exists(DB_PATH): return None
@@ -617,6 +601,17 @@ df_customers = load_all_customers()
 # --- HLAVNÍ MENU ---
 menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence"])
 
+# Výpočet košíku pro Sidebar (Živý přehled)
+celkem_polozek = 0
+celkem_cena = 0.0
+for k, v in st.session_state.data_zakazky.items():
+    if v["q"] > 0: 
+        celkem_polozek += v["q"]
+        celkem_cena += (v["q"] * v["p"])
+for k, v in st.session_state.dynamic_items.items():
+    celkem_polozek += v["q"]
+    celkem_cena += (v["q"] * v["p"])
+
 if menu_volba == "📝 Tvorba Dodacího listu":
     # --- SIDEBAR PRO DL ---
     with st.sidebar:
@@ -628,13 +623,9 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         st.divider()
         
         if df_customers is not None:
-            # Očištění databáze pro bezpečné fungování roletky
             filt = df_customers.copy()
             filt["FIRMA"] = filt["FIRMA"].fillna("Neznámý název")
-            # Zajištění čistého IČO pro vyhledávání
             filt["clean_ico"] = filt["ICO"].apply(clean_ico)
-            
-            # Odstranění přesných duplicit, aby roletka nepadala
             filt = filt.drop_duplicates(subset=["clean_ico", "FIRMA"])
             filt = filt.sort_values(by="FIRMA", key=lambda s: s.astype(str).str.lower())
 
@@ -646,7 +637,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     return f"{f}  |  IČO: {i}"
 
                 opts = filt.apply(format_cust, axis=1).tolist()
-
                 default_idx = None
                 if st.session_state.vybrany_zakaznik:
                     curr_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO", ""))
@@ -655,32 +645,18 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                             default_idx = idx_opt
                             break
 
-                sel = st.selectbox(
-                    "🔍 Vyhledat odběratele (pište název nebo IČO):",
-                    options=opts,
-                    index=default_idx if default_idx is not None else 0,
-                    help="Vyhledává se POUZE ve vaší lokální databázi W-SERVIS."
-                )
-                
+                sel = st.selectbox("🔍 Vyhledat odběratele:", options=opts, index=default_idx if default_idx is not None else 0)
                 idx = opts.index(sel)
                 curr = filt.iloc[idx].to_dict()
 
                 if (st.session_state.vybrany_zakaznik is None or clean_ico(st.session_state.vybrany_zakaznik.get("ICO")) != clean_ico(curr.get("ICO"))):
                     ico_val = clean_ico(curr.get("ICO"))
-                    
-                    with st.spinner("Načítám detaily zákazníka z lokální databáze..."):
-                        if not validate_ico(ico_val):
-                            st.warning(f"Upozornění: Neplatné IČO ({ico_val})")
-                        
+                    with st.spinner("Načítám detaily..."):
                         local_data = build_form_data_from_customer(ico_val)
-                        if local_data:
-                            curr.update(local_data)
-                                
+                        if local_data: curr.update(local_data)
                     st.session_state.vybrany_zakaznik = curr.copy()
-
             else: st.warning("Nenalezeno.")
 
-        st.divider()
         st.subheader("🏢 Umístění v objektech")
         objekty_text = ""
         
@@ -689,27 +665,29 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             ulozene_objekty = get_objects_from_db(aktualni_ico)
             
             if ulozene_objekty:
-                vybrane_objekty = st.multiselect(
-                    "Vyberte objekty z paměti pro tento DL:",
-                    options=ulozene_objekty,
-                    default=[]
-                )
+                vybrane_objekty = st.multiselect("Vyberte objekty z paměti:", options=ulozene_objekty, default=[])
                 objekty_text = "\n".join(vybrane_objekty)
-            else:
-                st.info("Zákazník zatím nemá uložené žádné objekty.")
                 
-            with st.expander("➕ Přidat nový objekt k zákazníkovi"):
+            with st.expander("➕ Přidat nový objekt"):
                 with st.form("add_obj_form", clear_on_submit=True):
-                    novy_objekt = st.text_input("Název objektu (např. OD Prior - 1. patro)")
-                    if st.form_submit_button("Uložit do paměti"):
+                    novy_objekt = st.text_input("Název objektu")
+                    if st.form_submit_button("Uložit"):
                         if novy_objekt.strip():
                             add_object_to_db(aktualni_ico, novy_objekt)
-                            st.success(f"Objekt přidán!")
                             st.rerun()
+
+        # DYNAMICKÝ KOŠÍK V SIDEBARU
+        st.markdown(f"""
+        <div class="cart-box">
+            <b>🛒 Živý přehled DL</b><br/>
+            Položek: {int(celkem_polozek)} ks<br/>
+            Celkem: {celkem_cena:,.2f} Kč
+        </div>
+        """, unsafe_allow_html=True)
 
     # --- MAIN AREA PRO DL ---
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 24.1 | 100% Offline s opravou Excel formátování | Plná stabilita")
+    st.caption("Verze 25.0 Enterprise | Excel Sync | Smart Objects | Živý přehled košíku")
 
     tabs = st.tabs(["🔥 1. HP Kontroly", "🚰 2. PV Kontroly", "🛠️ 3. HP Opravy", "🚗 4. Náhrady", "🛒 5. Zboží", "🧾 6. Tisk"])
 
@@ -732,7 +710,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         
         mnozstvi_neopravitelne = st.session_state.data_zakazky.get("Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění", {}).get("q", 0)
         if mnozstvi_neopravitelne > 0:
-            st.warning("⚠️ Byly zadány neopravitelné přístroje (NV). Zadejte prosím důvody vyřazení.")
+            st.warning("⚠️ Zadejte prosím důvody vyřazení neopravitelných přístrojů.")
             vybrane_kody = st.multiselect(
                 "Důvody vyřazení (A-K):",
                 options=list(DUVODY_VYRAZENI.keys()),
@@ -780,12 +758,12 @@ if menu_volba == "📝 Tvorba Dodacího listu":
         item_row("Nahrady", "Náhrada za použití komunikačního kanálu pro zjištění...", 48.00, "n8")
 
     with tabs[4]:
-        st.subheader("4. PRODEJ ZBOŽÍ, MATERIÁLU A ND (Dynamická nabídka)")
+        st.subheader("4. PRODEJ ZBOŽÍ A MATERIÁLU")
         zbozi_kategorie = ["Zboží", "ND_HP", "ND_Voda", "TAB", "TABFOTO", "HILTI", "CIDLO", "PASKA", "PK", "reklama", "FA", "Ostatni", "OZO", "zbozi"]
         db_items = get_items_from_db(zbozi_kategorie)
         
         if not db_items:
-            st.warning("⚠️ Nejsou nahrány žádné ceníky pro Zboží.")
+            st.warning("⚠️ Sklad je prázdný. Klikněte vlevo v Evidenci na Synchronizovat.")
         else:
             items_dict_lookup = {item["nazev"]: item for item in db_items}
             c1, c2, c3, c4 = st.columns([4, 1.5, 1.5, 1.5])
@@ -800,9 +778,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     st.write("")
                     if st.button("➕ Přidat", use_container_width=True):
                         interni_kat = items_dict_lookup[zvolena_polozka]["internal_cat"]
-                        if interni_kat == "zbozi" or interni_kat not in CATEGORY_MAP.values():
-                            interni_kat = "Zboží"
-                            
+                        if interni_kat == "zbozi" or interni_kat not in CATEGORY_MAP.values(): interni_kat = "Zboží"
                         if zvolena_polozka in st.session_state.dynamic_items:
                             st.session_state.dynamic_items[zvolena_polozka]["q"] += mnozstvi_input
                             st.session_state.dynamic_items[zvolena_polozka]["p"] = cena_input
@@ -812,7 +788,6 @@ if menu_volba == "📝 Tvorba Dodacího listu":
 
         if st.session_state.dynamic_items:
             st.divider()
-            st.write("🛒 **Zboží připravené na Dodací list:**")
             for k, v in list(st.session_state.dynamic_items.items()):
                 ca, cb, cc, cd = st.columns([5, 2, 2, 1])
                 ca.write(f"• {k}")
@@ -830,21 +805,17 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             active_items[k] = v
 
         if not active_items:
-            st.warning("Dodací list je prázdný. Zadejte hodnoty v záložkách.")
+            st.warning("Dodací list je prázdný.")
         else:
-            grand_total = sum(vals["q"] * vals["p"] for vals in active_items.values())
             firma = st.session_state.vybrany_zakaznik.get("FIRMA", "Neznámý") if st.session_state.vybrany_zakaznik else "Neznámý"
-            
             st.write(f"### Souhrn pro: {firma}")
-            if st.session_state.vyrazene_kody:
-                st.info(f"K Dodacímu listu budou připojeny tyto kódy vyřazení: {', '.join(st.session_state.vyrazene_kody)}")
             
             c_f1, c_f2 = st.columns(2)
-            with c_f1: st.metric("CELKEM ZA DODACÍ LIST BEZ DPH", f"{grand_total:,.2f} Kč")
+            with c_f1: st.metric("CELKEM BEZ DPH", f"{celkem_cena:,.2f} Kč")
             with c_f2:
-                if st.button("📄 VYGENEROVAT ČISTÝ DODACÍ LIST (PDF)"):
+                if st.button("📄 VYGENEROVAT ČISTÝ DODACÍ LIST (PDF)", type="primary"):
                     if not st.session_state.vybrany_zakaznik:
-                        st.error("Nejprve vyberte zákazníka v postranním panelu.")
+                        st.error("Vyberte zákazníka!")
                     else:
                         pdf_doc = create_wservis_dl(
                             st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, objekty_text, typ_dl, st.session_state.vyrazene_kody
@@ -853,15 +824,27 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                             st.download_button("⬇️ STÁHNOUT PDF", data=pdf_doc, file_name=f"DL_{dl_number}_{firma.replace(' ','_')}.pdf")
 
 elif menu_volba == "🗄️ Katalog a Evidence":
-    st.title("🗄️ Správa Databáze")
+    # --- MODUL EVIDENCE ---
+    st.title("🗄️ Katalog, Sklad a Evidence")
     
     with st.expander("⚙️ Import dat z W-SERVIS (Synchronizace)"):
-        st.info("Nahrajte do složky 'data/ceniky/' vaše ceníky nebo velký exportní soubor 'expimp.csv' a klikněte na tlačítko níže.")
-        if st.button("🚀 Spustit kompletní synchronizaci databáze", type="primary"):
-            with st.spinner("Zpracovávám data..."):
+        st.info("Nahráním souborů jako 'Zboží Formulář.xlsx' a 'expimp.csv' naplníte tento katalog.")
+        if st.button("🚀 Spustit kompletní synchronizaci", type="primary"):
+            with st.spinner("Aktualizuji databázi..."):
                 log = import_all_ceniky()
-                st.success("Synchronizace dokončena!")
+                st.success("Hotovo!")
                 st.code(log)
+
+    st.subheader("Aktuální stav Ceníků a Zboží v DB")
+    if os.path.exists(DB_PATH):
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            # Zkusíme načíst všechny relevantní tabulky a zobrazit je v profi tabulce
+            df_zbozi = pd.read_sql("SELECT nazev as 'Název položky', cena as 'Cena (Kč)' FROM cenik_zbozi ORDER BY nazev", conn)
+            st.dataframe(df_zbozi, use_container_width=True, height=400)
+        except Exception:
+            st.info("Tabulka Zboží je zatím prázdná.")
+        conn.close()
 
 st.sidebar.divider()
 st.sidebar.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']}")
