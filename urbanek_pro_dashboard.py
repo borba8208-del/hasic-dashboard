@@ -1,7 +1,7 @@
 import os
 import re
 import time
-import datetime
+from datetime import datetime # ZDE JE OPRAVA (správný import pro datum)
 import unicodedata
 import sqlite3
 import urllib.request
@@ -14,7 +14,7 @@ from fpdf import FPDF
 # =====================================================================
 # 🚀 LAYER 0: BOOTSTRAP (Streamlit Engine)
 # =====================================================================
-st.set_page_config(page_title="W-SERVIS Enterprise v47.3", layout="wide", page_icon="🚒")
+st.set_page_config(page_title="W-SERVIS Enterprise v47.4", layout="wide", page_icon="🚒")
 
 # =====================================================================
 # 🧹 LAYER 1: NORMALIZATION & UTILS
@@ -182,6 +182,18 @@ def service_import_data():
 # =====================================================================
 # 📄 LAYER 5: PDF ENGINE
 # =====================================================================
+FIRMA_VLASTNI: Dict[str, Any] = {
+    "název": "Ilja Urbánek HASIČ - SERVIS",
+    "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
+    "ico": "60835265",
+    "dic": "CZ5706281691",
+    "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
+    "telefony": "608 409 036, 777 664 768",
+    "email": "schranka@hasic-servis.com",
+    "web": "www.hasic-servis.com",
+    "certifikace": "TÜV NORD Czech",
+}
+
 class UrbaneKPDF(FPDF):
     def __init__(self, orientation='P'):
         super().__init__(orientation=orientation)
@@ -281,8 +293,11 @@ if menu == "📝 Zpracování zakázky":
                 s_c = len(df_save[df_save['stav'].isin(['S', 'S-nový'])])
                 no_c = len(df_save[df_save['stav'].isin(['NO', 'NOPZ'])])
                 nv_c = len(df_save[df_save['stav'] == 'NV'])
-                st.session_state["q1_h1"] = float(s_c); st.session_state["q1_h2"] = float(no_c)
-                st.session_state["q1_h3"] = float(nv_c); st.session_state["q1_s1"] = float(s_c+no_c+nv_c)
+                
+                st.session_state["q1_h1"] = float(s_c)
+                st.session_state["q1_h2"] = float(no_c)
+                st.session_state["q1_h3"] = float(nv_c)
+                st.session_state["q1_s1"] = float(s_c+no_c+nv_c)
                 st.session_state["evidence_df"] = df_save
                 st.success("✅ Evidence uložena."); st.rerun()
 
@@ -312,30 +327,30 @@ if menu == "📝 Zpracování zakázky":
 
 elif menu == "🗄️ Katalog & Sklad":
     st.title("🗄️ Správa ceníků a skladu")
-    if st.button("🚀 Spustit kompletní synchronizaci s W-SERVIS"):
+    if st.button("🚀 Spustit synchronizaci s W-SERVIS"):
         res = service_import_data()
-        st.success("Import dokončen.")
+        st.success("Import dokončen")
         st.code(res)
     
-    tab_list = ["obchpartner", "cenik_hp", "cenik_zbozi"]
-    chosen = st.selectbox("Zobrazit tabulku:", tab_list)
-    df_v = safe_db_query(f"SELECT * FROM {chosen}")
-    if not df_v.empty: st.dataframe(df_v, use_container_width=True)
-    else: st.warning("Tabulka je prázdná. Proveďte synchronizaci.")
+    st.subheader("Aktivní ceník zboží")
+    df_z = safe_db_query("SELECT nazev, cena FROM cenik_zbozi ORDER BY nazev")
+    if not df_z.empty:
+        st.dataframe(df_z, use_container_width=True)
+    else:
+        st.warning("Sklad je prázdný. Spusťte synchronizaci.")
 
 elif menu == "📊 Obchodní Velín (Audit)":
-    st.title("📊 Obchodní Velín")
-    up_f = st.file_uploader("Nahrajte auditní CSV:", type=['csv'])
-    if up_f:
+    st.title("🚒 Obchodní Velín HASIČ-SERVIS")
+    u_file = st.file_uploader("Nahrajte soubor 'Migrace_Centraly_Navrh.csv' pro audit:", type=['csv'])
+    if u_file:
         try:
-            df_v = pd.read_csv(up_f, sep=';', encoding='utf-8-sig')
-            st.session_state["velin_data"] = df_v
-        except: st.error("Chyba čtení CSV.")
-
-    if not st.session_state["velin_data"].empty:
-        df_aud, v_stats = run_expert_audit(st.session_state["velin_data"])
-        st.metric("Index integrity dat", f"{100 - (v_stats['chyb']/len(df_aud)*100 if len(df_aud)>0 else 0):.1f} %")
-        st.dataframe(df_aud, use_container_width=True)
+            df_v = pd.read_csv(u_file, sep=';', encoding='utf-8-sig')
+            df_v_audited, v_stats = run_expert_audit(df_v)
+            st.metric("Celková integrita dat zakázky", f"{v_stats['score']:.1f} %")
+            st.dataframe(df_v_audited, use_container_width=True)
+        except Exception as e:
+            st.error(f"Chyba při čtení CSV: {e}")
 
 st.sidebar.divider()
-st.sidebar.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']}")
+# OPRAVA CHYBY: Použití datetime.now().year, protože datetime byl importován přímo.
+st.sidebar.caption(f"© {datetime.now().year} {FIRMA_VLASTNI['název']}")
