@@ -11,9 +11,23 @@ import streamlit as st
 import pandas as pd
 from fpdf import FPDF
 
-# ==========================================
-# ČÍSELNÍKY DLE W-SERVIS DATABÁZE
-# ==========================================
+# =====================================================================
+# 🗄️ LAYER 1: SCHEMA (Definice a konfigurace)
+# =====================================================================
+FIRMA_VLASTNI: Dict[str, Any] = {
+    "název": "Ilja Urbánek HASIČ - SERVIS",
+    "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
+    "ico": "60835265",
+    "dic": "CZ5706281691",
+    "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
+    "telefony": "608 409 036, 777 664 768",
+    "email": "schranka@hasic-servis.com",
+    "web": "www.hasic-servis.com",
+    "certifikace": "TÜV NORD Czech",
+}
+
+STAVY_HP = ["S", "NO", "NOPZ", "CH", "S-nový", "NV"]
+
 DUVODY_VYRAZENI = {
     "": "",
     "A": "HP neodpovídá ČSN (zastaralá/neschválená konstr.)",
@@ -29,8 +43,6 @@ DUVODY_VYRAZENI = {
     "K": "Zprovoznění HP je neekonomické - vyřazen na žádost majitele"
 }
 
-STAVY_HP = ["S", "NO", "NOPZ", "CH", "S-nový", "NV"]
-
 CATEGORY_MAP: Dict[str, str] = {
     "HP": "HP", "Nahrady": "Nahrady", "Voda": "VODA", "Ostatni": "ostatni",
     "ND_HP": "ND_HP", "ND_Voda": "ND_VODA", "FA": "FA", "TAB": "TAB",
@@ -39,24 +51,68 @@ CATEGORY_MAP: Dict[str, str] = {
     "Opravy": "opravy", "Zboží": "zbozi"
 }
 
-# ==========================================
-# 1. KONFIGURACE FIRMY A DB
-# ==========================================
-FIRMA_VLASTNI: Dict[str, Any] = {
-    "název": "Ilja Urbánek HASIČ - SERVIS",
-    "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
-    "ico": "60835265",
-    "dic": "CZ5706281691",
-    "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
-    "telefony": "608 409 036, 777 664 768",
-    "email": "schranka@hasic-servis.com",
-    "web": "www.hasic-servis.com",
-    "certifikace": "TÜV NORD Czech",
-}
-
 DB_PATH = "data/data.db"
 CSV_FOLDER = "data/ceniky/"
 
+# =====================================================================
+# 🧹 LAYER 2: NORMALIZATION (Čištění dat)
+# =====================================================================
+def normalize_column_name(col: str) -> str:
+    col = str(col)
+    col = unicodedata.normalize("NFKD", col)
+    col = "".join(c for c in col if not unicodedata.combining(c))
+    col = col.lower().strip()
+    col = re.sub(r"[\s/]+", "_", col)
+    col = re.sub(r"[^a-z0-9_]", "", col)
+    return col
+
+def normalize_price(v: Any) -> float:
+    s = str(v).replace(" ", "").replace(",", ".")
+    try: return float(s)
+    except: return 0.0
+
+def clean_ico(ico_val: Any) -> str:
+    s = str(ico_val).strip()
+    if s.lower() in ['nan', 'none', 'null', '']: return ""
+    return s.split('.')[0]
+
+def format_cena(num):
+    if num == 0: return "0,00"
+    st = f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
+    if st.endswith(",00"): return st[:-3]
+    if st.endswith("0") and "," in st: return st[:-1]
+    return st
+
+def safe_str(txt, is_pismo_ok=True):
+    return str(txt).replace('\n', ' ').replace('\r', '').strip()
+
+# =====================================================================
+# 🛡️ LAYER 3: VALIDATION (Business pravidla)
+# =====================================================================
+def validate_ico(ico: str) -> bool:
+    ico_clean = clean_ico(ico)
+    if not ico_clean.isdigit() or len(ico_clean) != 8: return False
+    digits = [int(d) for d in ico_clean]
+    weights = [8, 7, 6, 5, 4, 3, 2]
+    s = sum(d * w for d, w in zip(digits[:7], weights))
+    r = s % 11
+    c = 1 if r == 0 else (0 if r == 1 else 11 - r)
+    return digits[7] == c
+
+def validate_stav_and_duvod(stav: str, duvod: str) -> Tuple[bool, str]:
+    if stav and stav not in STAVY_HP:
+        return False, f"Neznámý stav HP: {stav}"
+    if stav == "NV" and not duvod:
+        return False, "Stav NV musí mít přiřazen kód důvodu vyřazení."
+    if stav != "NV" and duvod:
+        return False, "Důvod vyřazení lze uvést pouze u stavu NV."
+    if duvod and duvod not in DUVODY_VYRAZENI:
+        return False, f"Neznámý kód důvodu vyřazení: {duvod}"
+    return True, ""
+
+# =====================================================================
+# 💾 LAYER 4: REPOSITORY (Databázové operace SQLite)
+# =====================================================================
 def init_db():
     os.makedirs("data", exist_ok=True)
     os.makedirs(CSV_FOLDER, exist_ok=True)
@@ -90,232 +146,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
-init_db()
-
-# Inicializace session state
-if "data_zakazky" not in st.session_state: st.session_state.data_zakazky = {}
-if "dynamic_items" not in st.session_state: st.session_state.dynamic_items = {}
-if "vybrany_zakaznik" not in st.session_state: st.session_state.vybrany_zakaznik = None
-if "loaded_ico" not in st.session_state: st.session_state.loaded_ico = None
-if "evidence_df" not in st.session_state: st.session_state.evidence_df = pd.DataFrame()
-if "auto_kalkulace" not in st.session_state: 
-    st.session_state.auto_kalkulace = {"S": 0, "NO": 0, "NV": 0, "total": 0, "vyrazene_kody": set()}
-
-# ==========================================
-# 2. DATABÁZOVÉ A POMOCNÉ FUNKCE
-# ==========================================
-def normalize_category_to_table(cat_key: str) -> str:
-    if not cat_key: return "cenik_ostatni"
-    normalized = cat_key.lower().strip()
-    normalized = "".join(char for char in unicodedata.normalize("NFKD", normalized) if not unicodedata.combining(char))
-    normalized = re.sub(r"[\s/]+", "_", normalized)
-    normalized = re.sub(r"[^a-z0-9_]", "", normalized)
-    return f"cenik_{normalized}"
-
-def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
-    excel_path = base_path + ".xlsx"
-    xml_path = base_path + ".xml"
-    csv_path = base_path + ".csv"
-    if os.path.exists(excel_path):
-        try: return pd.read_excel(excel_path)
-        except Exception: pass
-    if os.path.exists(xml_path) and os.path.getsize(xml_path) > 0:
-        try:
-            import xml.etree.ElementTree as ET
-            xml_data = None
-            for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
-                try:
-                    with open(xml_path, 'r', encoding=enc) as f: xml_data = f.read()
-                    break
-                except UnicodeDecodeError: continue
-            if xml_data:
-                xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
-                root = ET.fromstring(xml_data)
-                rows = []
-                for pol in root.findall('.//polozka'):
-                    row_data = {}
-                    for child in pol:
-                        if len(child) > 0: 
-                            for subchild in child: row_data[subchild.tag.lower()] = subchild.text if subchild.text else ""
-                        else: row_data[child.tag.lower()] = child.text if child.text else ""
-                    rows.append(row_data)
-                if rows: return pd.DataFrame(rows)
-        except Exception: pass
-    if os.path.exists(csv_path): 
-        for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250"):
-            try: return pd.read_csv(csv_path, sep=";", encoding=enc, on_bad_lines='skip')
-            except Exception: continue
-    return None
-
-def clean_ico(ico_val: Any) -> str:
-    s = str(ico_val).strip()
-    if s.lower() in ['nan', 'none', 'null', '']: return ""
-    return s.split('.')[0]
-
-def import_all_ceniky() -> str:
-    """Kompletní import všech dat z Excelů a XML do databáze (OPRAVENO)"""
-    log_messages: List[str] = []
-    connection = sqlite3.connect(DB_PATH)
-    try:
-        # Import ceníků (Zboží, ND, Práce...)
-        for ui_key, name in CATEGORY_MAP.items():
-            base_path = os.path.join(CSV_FOLDER, name)
-            table_name = normalize_category_to_table(ui_key)
-
-            df = safe_read_data(base_path)
-            if df is None: continue
-
-            df.columns = [str(col).strip().lower() for col in df.columns]
-            if 'zbozi_nazev' in df.columns: df.rename(columns={'zbozi_nazev': 'nazev'}, inplace=True)
-            if 'zbozi_cena' in df.columns: df.rename(columns={'zbozi_cena': 'cena'}, inplace=True)
-            if 'ukon_popis' in df.columns: df.rename(columns={'ukon_popis': 'nazev'}, inplace=True)
-            if 'ukon_cena' in df.columns: df.rename(columns={'ukon_cena': 'cena'}, inplace=True)
-
-            if "nazev" not in df.columns or "cena" not in df.columns: continue
-
-            df = df.dropna(subset=["nazev", "cena"])
-            df["nazev"] = df["nazev"].astype(str).str.strip()
-            df = df[df["nazev"] != "nan"]
-            df = df[df["nazev"] != ""]
-            
-            df = df.drop_duplicates(subset=["nazev"], keep="first")
-
-            df["cena"] = df["cena"].astype(str).str.replace(r"\s+", "", regex=True).str.replace(",", ".", regex=False)
-            df["cena"] = pd.to_numeric(df["cena"], errors="coerce").fillna(0.0)
-
-            valid_cols = [col for col in df.columns if col in ["nazev", "cena"]]
-            try:
-                df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
-                log_messages.append(f"✅ Načteno: {name} ({len(df)} položek)")
-            except Exception as e:
-                log_messages.append(f"❌ {name}: Chyba DB – {e}")
-                
-        # Import hlavního skladu expimp
-        expimp_base = os.path.join(CSV_FOLDER, "expimp")
-        df_exp = safe_read_data(expimp_base)
-        if df_exp is not None:
-            df_exp.columns = [str(c).strip().lower().replace('"', '') for c in df_exp.columns]
-            name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
-            price_col = None
-            if 'cena1' in df_exp.columns: price_col = 'cena1'
-            elif 'cena_prodejni' in df_exp.columns: price_col = 'cena_prodejni'
-            else:
-                for col in df_exp.columns:
-                    if 'cena' in col and 'prum' not in col and 'posl' not in col and 'nakup' not in col:
-                        price_col = col; break
-            
-            if name_col:
-                df_clean = pd.DataFrame()
-                df_clean['nazev'] = df_exp[name_col].astype(str).str.strip()
-                if price_col:
-                    df_clean['cena'] = df_exp[price_col].astype(str).str.replace(r"\s+", "", regex=True).str.replace(",", ".", regex=False)
-                    df_clean['cena'] = pd.to_numeric(df_clean['cena'], errors="coerce").fillna(0.0)
-                else: df_clean['cena'] = 0.0
-
-                df_clean = df_clean.dropna(subset=['nazev'])
-                df_clean = df_clean[df_clean['nazev'] != "nan"]
-                df_clean = df_clean[df_clean['nazev'] != ""]
-                df_clean = df_clean.drop_duplicates(subset=["nazev"], keep="first")
-                
-                try:
-                    df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
-                    log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
-                except Exception: pass
-
-        # Import XML databáze zákazníků
-        xml_path = os.path.join(CSV_FOLDER, "obchpartner.xml")
-        if os.path.exists(xml_path):
-            try:
-                import xml.etree.ElementTree as ET
-                xml_data = None
-                for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
-                    try:
-                        with open(xml_path, 'r', encoding=enc) as f: xml_data = f.read()
-                        break
-                    except UnicodeDecodeError: continue
-                
-                if xml_data:
-                    xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
-                    root = ET.fromstring(xml_data)
-                    zakaznici = []
-                    for pol in root.findall('.//polozka'):
-                        ico = pol.findtext('ICO', '')
-                        dic = pol.findtext('DIC', '')
-                        adresa = pol.find('ADRESA')
-                        firma = adresa.findtext('FIRMA', '') if adresa is not None else ''
-                        adresa1 = adresa.findtext('ADRESA1', '') if adresa is not None else ''
-                        adresa2 = adresa.findtext('ADRESA2', '') if adresa is not None else ''
-                        mesto = adresa.findtext('ADRESA3', '') if adresa is not None else ''
-                        psc = adresa.findtext('PSC', '') if adresa is not None else ''
-                        ulice = adresa1 if adresa1.strip() else adresa2
-                        
-                        if firma.strip():
-                            zakaznici.append({
-                                "ICO": clean_ico(ico), "DIC": dic.strip(), "FIRMA": firma.strip(),
-                                "ADRESA1": ulice.strip(), "ADRESA3": mesto.strip(), "PSC": psc.strip()
-                            })
-                    
-                    if zakaznici:
-                        df_xml = pd.DataFrame(zakaznici)
-                        df_xml.to_sql("obchpartner", connection, if_exists="replace", index=False)
-                        log_messages.append(f"🏢 ÚSPĚCH: Zákazníci z obchpartner.xml načteni ({len(df_xml)} firem).")
-            except Exception as e:
-                log_messages.append(f"❌ obchpartner.xml: Nelze zpracovat – {e}")
-
-    finally:
-        connection.close()
-    return "\n".join(log_messages) if log_messages else "Žádné soubory k načtení."
-
-def validate_ico(ico: Any) -> bool:
-    ico_str = clean_ico(ico)
-    if not ico_str.isdigit() or len(ico_str) != 8: return False
-    digits = [int(d) for d in ico_str]
-    weights = [8, 7, 6, 5, 4, 3, 2]
-    s = sum(d * w for d, w in zip(digits[:7], weights))
-    r = s % 11
-    c = 1 if r == 0 else (0 if r == 1 else 11 - r)
-    return digits[7] == c
-
-def load_local_customers() -> Optional[pd.DataFrame]:
-    base_path = os.path.join("data", "ceniky", "zakaznici")
-    df = safe_read_data(base_path)
-    if df is not None and not df.empty:
-        def clean_col(c): 
-            s = str(c).strip().lower()
-            return "".join(char for char in unicodedata.normalize("NFKD", s) if not unicodedata.combining(char))
-        df.columns = [clean_col(c) for c in df.columns]
-        if "ico" in df.columns: df["ico"] = df["ico"].apply(clean_ico)
-        return df
-    return None
-
-def find_customer_by_ico_local(ico: Any) -> Optional[Dict[str, Any]]:
-    ico_clean = clean_ico(ico)
-    if not validate_ico(ico_clean): return None
-    df = load_local_customers()
-    if df is None or "ico" not in df.columns: return None
-    row = df[df["ico"] == ico_clean]
-    if row.empty: return None
-    return row.iloc[0].to_dict()
-
-def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
-    cust = find_customer_by_ico_local(ico)
-    if not cust: return None
-    return {
-        "ICO": clean_ico(cust.get("ico", "")),
-        "DIC": cust.get("dic", ""),
-        "FIRMA": cust.get("firma", ""),
-        "ULICE": cust.get("ulice", ""),
-        "CP": cust.get("cp", ""),
-        "CO": cust.get("co", ""),
-        "ADRESA3": cust.get("mesto", ""),
-        "PSC": cust.get("psc", ""),
-        "KONTAKT": cust.get("kontakt", ""),
-        "TELEFON": cust.get("telefon", ""),
-        "EMAIL": cust.get("email", ""),
-        "UCET": cust.get("ucet", ""),
-        "POZNAMKA": cust.get("poznamka", "")
-    }
 
 def get_price(cat_key: str, item_name: str) -> float:
     if not os.path.exists(DB_PATH): return 0.0
@@ -365,6 +195,146 @@ def add_object_to_db(ico: Any, nazev_objektu: str) -> bool:
         return True
     except Exception: return False
 
+def save_hp_evidence_to_db(ico: str, df_clean: pd.DataFrame):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (ico,))
+    conn.commit()  
+    df_clean.to_sql("evidence_hp", conn, if_exists="append", index=False)
+    conn.close()
+
+# =====================================================================
+# ⚙️ LAYER 5: SERVICES (Doménová a importní logika)
+# =====================================================================
+def safe_read_data_io(base_path: str) -> Optional[pd.DataFrame]:
+    """Služba pro čtení dat z různých zdrojů."""
+    excel_path = base_path + ".xlsx"
+    xml_path = base_path + ".xml"
+    csv_path = base_path + ".csv"
+    if os.path.exists(excel_path):
+        try: return pd.read_excel(excel_path)
+        except Exception: pass
+    if os.path.exists(xml_path) and os.path.getsize(xml_path) > 0:
+        try:
+            import xml.etree.ElementTree as ET
+            xml_data = None
+            for enc in ['utf-8-sig', 'utf-8', 'cp1250', 'windows-1250']:
+                try:
+                    with open(xml_path, 'r', encoding=enc) as f: xml_data = f.read()
+                    break
+                except UnicodeDecodeError: continue
+            if xml_data:
+                xml_data = re.sub(r'<\?xml.*?\?>', '', xml_data, flags=re.IGNORECASE)
+                root = ET.fromstring(xml_data)
+                rows = []
+                for pol in root.findall('.//polozka'):
+                    row_data = {}
+                    for child in pol:
+                        if len(child) > 0: 
+                            for subchild in child: row_data[subchild.tag.lower()] = subchild.text if subchild.text else ""
+                        else: row_data[child.tag.lower()] = child.text if child.text else ""
+                    rows.append(row_data)
+                if rows: return pd.DataFrame(rows)
+        except Exception: pass
+    if os.path.exists(csv_path): 
+        for enc in ("utf-8-sig", "utf-8", "cp1250", "windows-1250"):
+            try: return pd.read_csv(csv_path, sep=";", encoding=enc, on_bad_lines='skip')
+            except Exception: continue
+    return None
+
+def service_import_all_ceniky() -> str:
+    """Komplexní služba pro import ceníků s normalizací."""
+    log_messages: List[str] = []
+    connection = sqlite3.connect(DB_PATH)
+    try:
+        for ui_key, name in CATEGORY_MAP.items():
+            base_path = os.path.join(CSV_FOLDER, name)
+            table_name = normalize_category_to_table(ui_key)
+            df = safe_read_data_io(base_path)
+            if df is None: continue
+
+            df.columns = [normalize_column_name(col) for col in df.columns]
+            if 'zbozi_nazev' in df.columns: df.rename(columns={'zbozi_nazev': 'nazev'}, inplace=True)
+            if 'zbozi_cena' in df.columns: df.rename(columns={'zbozi_cena': 'cena'}, inplace=True)
+            if 'ukon_popis' in df.columns: df.rename(columns={'ukon_popis': 'nazev'}, inplace=True)
+            if 'ukon_cena' in df.columns: df.rename(columns={'ukon_cena': 'cena'}, inplace=True)
+
+            if "nazev" not in df.columns or "cena" not in df.columns: continue
+
+            df = df.dropna(subset=["nazev", "cena"])
+            df["nazev"] = df["nazev"].astype(str).str.strip()
+            df = df[df["nazev"] != "nan"]
+            df = df[df["nazev"] != ""]
+            df = df.drop_duplicates(subset=["nazev"], keep="first")
+            df["cena"] = df["cena"].apply(normalize_price)
+
+            valid_cols = [col for col in df.columns if col in ["nazev", "cena"]]
+            try:
+                df[valid_cols].to_sql(table_name, connection, if_exists="replace", index=False)
+                log_messages.append(f"✅ Načteno: {name} ({len(df)} položek)")
+            except Exception as e: log_messages.append(f"❌ {name}: Chyba DB – {e}")
+                
+        # Import Skladu
+        expimp_base = os.path.join(CSV_FOLDER, "expimp")
+        df_exp = safe_read_data_io(expimp_base)
+        if df_exp is not None:
+            df_exp.columns = [normalize_column_name(c) for c in df_exp.columns]
+            name_col = 'nazev' if 'nazev' in df_exp.columns else ('zkratka' if 'zkratka' in df_exp.columns else None)
+            price_col = None
+            if 'cena1' in df_exp.columns: price_col = 'cena1'
+            elif 'cena_prodejni' in df_exp.columns: price_col = 'cena_prodejni'
+            else:
+                for col in df_exp.columns:
+                    if 'cena' in col and 'prum' not in col and 'posl' not in col and 'nakup' not in col:
+                        price_col = col; break
+            
+            if name_col:
+                df_clean = pd.DataFrame()
+                df_clean['nazev'] = df_exp[name_col].astype(str).str.strip()
+                df_clean['cena'] = df_exp[price_col].apply(normalize_price) if price_col else 0.0
+                df_clean = df_clean.dropna(subset=['nazev'])
+                df_clean = df_clean[df_clean['nazev'] != "nan"]
+                df_clean = df_clean[df_clean['nazev'] != ""]
+                df_clean = df_clean.drop_duplicates(subset=["nazev"], keep="first")
+                try:
+                    df_clean.to_sql("cenik_zbozi", connection, if_exists="append", index=False)
+                    log_messages.append(f"📦 ÚSPĚCH: Zboží z expimp spárováno.")
+                except Exception: pass
+
+    finally:
+        connection.close()
+    return "\n".join(log_messages) if log_messages else "Žádné soubory k načtení."
+
+def service_calculate_billing(df_evid: pd.DataFrame) -> Tuple[Dict, str]:
+    """Hlavní byznys logika: Počítá fakturaci z předané tabulky evidence."""
+    # Očištění o prázdné řádky
+    df_clean = df_evid.copy()
+    df_clean['typ_hp'] = df_clean['typ_hp'].fillna("").astype(str).str.strip()
+    df_clean = df_clean[df_clean['typ_hp'] != '']
+
+    # Logika validace stavů a důvodů
+    errors = []
+    for idx, row in df_clean.iterrows():
+        ok, msg = validate_stav_and_duvod(row.get('stav',''), row.get('duvod_nv',''))
+        if not ok: errors.append(f"Řádek {idx+1} ({row.get('typ_hp')}): {msg}")
+
+    if errors:
+        return {}, "CHYBA VALIDACE:\n" + "\n".join(errors)
+
+    S_count = len(df_clean[df_clean['stav'].isin(['S', 'S-nový'])])
+    NO_count = len(df_clean[df_clean['stav'].isin(['NO', 'NOPZ'])])
+    NV_count = len(df_clean[df_clean['stav'] == 'NV'])
+    total_count = len(df_clean[df_clean['stav'] != 'CH'])
+    vyrazene_kody = set(df_clean[df_clean['stav'] == 'NV']['duvod_nv'].dropna().tolist())
+
+    calc_data = {
+        "S": S_count, "NO": NO_count, "NV": NV_count, "total": total_count, "vyrazene_kody": vyrazene_kody,
+        "df_clean": df_clean
+    }
+    return calc_data, ""
+
+# =====================================================================
+# 📄 LAYER 6: PDF ENGINE (Generátory dokumentů a tisk)
+# =====================================================================
 def setup_pdf_fonts(pdf: FPDF) -> bool:
     font_files = [("arial.ttf", "arialbd.ttf"), ("ARIAL.TTF", "ARIALBD.TTF"), ("Arial.ttf", "Arialbd.ttf")]
     for reg_font, bold_font in font_files:
@@ -374,32 +344,7 @@ def setup_pdf_fonts(pdf: FPDF) -> bool:
                 pdf.add_font("PismoCZ", "B", bold_font, uni=True)
                 return True
             except Exception: pass
-    try:
-        if not os.path.exists("dejavu.ttf"):
-            req = urllib.request.Request("https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans.ttf", headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as response, open("dejavu.ttf", 'wb') as out_file: out_file.write(response.read())
-        if not os.path.exists("dejavu-bold.ttf"):    
-            req_b = urllib.request.Request("https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans-Bold.ttf", headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req_b, timeout=10) as response, open("dejavu-bold.ttf", 'wb') as out_file: out_file.write(response.read())
-        pdf.add_font("PismoCZ", "", "dejavu.ttf", uni=True)
-        pdf.add_font("PismoCZ", "B", "dejavu-bold.ttf", uni=True)
-        return True
-    except Exception: pass
     return False
-
-def safe_str(txt, is_pismo_ok):
-    return str(txt).replace('\n', ' ').replace('\r', '').strip()
-
-def format_cena(num):
-    if num == 0: return "0,00"
-    st = f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
-    if st.endswith(",00"): return st[:-3]
-    if st.endswith("0") and "," in st: return st[:-1]
-    return st
-
-# ==========================================
-# 3. PDF ENGINE (GENERÁTORY DOKUMENTŮ)
-# ==========================================
 
 class UrbaneKPDF_Letterhead(FPDF):
     def __init__(self, orientation='P'):
@@ -428,15 +373,13 @@ class UrbaneKPDF_Letterhead(FPDF):
         self.set_line_width(0.2)
         self.ln(5)
 
-    def footer(self) -> None:
-        pass
+    def footer(self) -> None: pass
 
-# --- 3A. DOKLAD O KONTROLE HP (Landscape) ---
 def create_doklad_kontroly_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_number: str, zakazka: str, technik: str) -> tuple[Optional[bytes], Optional[str]]:
     pdf = UrbaneKPDF_Letterhead(orientation='L')
-    if not pdf.pismo_ok: return None, "Chyba fontu (Arial.ttf)."
+    if not pdf.pismo_ok: return None, "Chyba fontu (Arial.ttf nenalezen)."
     p = pdf.pismo_name
-    def s(t): return safe_str(t, True)
+    s = safe_str
 
     try:
         pdf.add_page()
@@ -479,28 +422,22 @@ def create_doklad_kontroly_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_number:
         pdf.ln()
 
         pdf.set_font(p, "", 8)
-        for idx, row in df_evid.iterrows():
+        df_clean = df_evid[df_evid['typ_hp'].fillna("").astype(str).str.strip() != '']
+        
+        for idx, row in df_clean.iterrows():
             pdf.cell(col_w[0], 5, s(str(idx+1)), border=1, align="C")
             pdf.cell(col_w[1], 5, s(row.get('druh','')), border=1)
-            typ_text = str(row.get('typ_hp',''))
-            pdf.cell(col_w[2], 5, s(typ_text[:28]), border=1)
+            pdf.cell(col_w[2], 5, s(str(row.get('typ_hp',''))[:28]), border=1)
             pdf.cell(col_w[3], 5, s(row.get('vyr_cislo','')), border=1, align="C")
             
             rv = str(row.get('rok_vyr','')).replace('.0','')
-            if rv == 'nan' or rv == '0': rv = ''
-            pdf.cell(col_w[4], 5, s(rv), border=1, align="C")
-            
+            pdf.cell(col_w[4], 5, s(rv if rv not in ['nan','0'] else ''), border=1, align="C")
             mv = str(row.get('mesic_vyr','')).replace('.0','')
-            if mv == 'nan' or mv == '0': mv = ''
-            pdf.cell(col_w[5], 5, s(mv), border=1, align="C")
-            
+            pdf.cell(col_w[5], 5, s(mv if mv not in ['nan','0'] else ''), border=1, align="C")
             tr = str(row.get('tlak_rok','')).replace('.0','')
-            if tr == 'nan' or tr == '0': tr = ''
-            pdf.cell(col_w[6], 5, s(tr), border=1, align="C")
-            
+            pdf.cell(col_w[6], 5, s(tr if tr not in ['nan','0'] else ''), border=1, align="C")
             tm = str(row.get('tlak_mesic','')).replace('.0','')
-            if tm == 'nan' or tm == '0': tm = ''
-            pdf.cell(col_w[7], 5, s(tm), border=1, align="C")
+            pdf.cell(col_w[7], 5, s(tm if tm not in ['nan','0'] else ''), border=1, align="C")
             
             pdf.cell(col_w[8], 5, s(str(row.get('objekt',''))[:28]), border=1)
             pdf.cell(col_w[9], 5, s(str(row.get('misto',''))[:40]), border=1)
@@ -515,15 +452,15 @@ def create_doklad_kontroly_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_number:
         return bytes(pdf.output()), None
     except Exception as e: return None, str(e)
 
-# --- 3B. PROTOKOL O VYŘAZENÍ (Portrait) ---
 def create_protokol_vyrazeni_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_number: str, zakazka: str, technik: str) -> tuple[Optional[bytes], Optional[str]]:
     pdf = UrbaneKPDF_Letterhead(orientation='P')
     if not pdf.pismo_ok: return None, "Chyba fontu."
     p = pdf.pismo_name
-    def s(t): return safe_str(t, True)
+    s = safe_str
 
     try:
-        df_nv = df_evid[df_evid['stav'] == 'NV']
+        df_clean = df_evid[df_evid['typ_hp'].fillna("").astype(str).str.strip() != '']
+        df_nv = df_clean[df_clean['stav'] == 'NV']
         
         pdf.add_page()
         pdf.set_font(p, "B", 14)
@@ -563,8 +500,7 @@ def create_protokol_vyrazeni_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_numbe
                 pdf.cell(col_w[1], 5, s(str(row.get('typ_hp',''))[:20]), border=1)
                 pdf.cell(col_w[2], 5, s(row.get('vyr_cislo','')), border=1, align="C")
                 rv = str(row.get('rok_vyr','')).replace('.0','')
-                if rv == 'nan' or rv == '0': rv = ''
-                pdf.cell(col_w[3], 5, s(rv), border=1, align="C")
+                pdf.cell(col_w[3], 5, s(rv if rv not in ['nan','0'] else ''), border=1, align="C")
                 pdf.cell(col_w[4], 5, s(str(row.get('objekt',''))[:25]), border=1)
                 pdf.cell(col_w[5], 5, s(str(row.get('misto',''))[:25]), border=1)
                 kod = str(row.get('duvod_nv','')).strip()
@@ -583,15 +519,13 @@ def create_protokol_vyrazeni_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_numbe
         return bytes(pdf.output()), None
     except Exception as e: return None, str(e)
 
-
-# --- 3C. DODACÍ LIST (Robustní generátor) ---
 def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka: str, technik: str, objekty_map: Dict, typ_dl: str, dl_type_name: str, included_sections: List[str]) -> tuple[Optional[bytes], Optional[str]]:
     pdf = UrbaneKPDF_Letterhead(orientation='P')
     if not pdf.pismo_ok: return None, "Chyba fontu."
     try:
         p = pdf.pismo_name
         pdf.add_page()
-        def s(t): return safe_str(t, True)
+        s = safe_str
 
         pdf.set_font(p, "B", 16)
         pdf.cell(0, 7, s("DODACÍ LIST"), align="C", ln=True)
@@ -699,16 +633,9 @@ def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka:
         pdf.ln(8)
 
         # Patička
-        firma = get_safe_str(zakaznik, 'FIRMA')
-        ico = clean_ico(zakaznik.get('ICO'))
-        dic = get_safe_str(zakaznik, 'DIC')
-        ul, cp, co = get_safe_str(zakaznik, "ULICE"), get_safe_str(zakaznik, "CP"), get_safe_str(zakaznik, "CO")
-        adr1 = get_safe_str(zakaznik, "ADRESA1")
-        if ul and cp: adr_line1 = f"{ul} {cp}" + (f"/{co}" if co and co != "0" else "")
-        elif ul: adr_line1 = ul
-        elif adr1: adr_line1 = adr1
-        else: adr_line1 = ""
-        adr_line2 = f"{get_safe_str(zakaznik, 'PSC')} {get_safe_str(zakaznik, 'ADRESA3')}".strip()
+        ul, cp, co = str(zakaznik.get("ULICE","")), str(zakaznik.get("CP","")), str(zakaznik.get("CO",""))
+        adr_line1 = f"{ul} {cp}" + (f"/{co}" if co and co != "0" else "") if ul else ""
+        adr_line2 = f"{zakaznik.get('PSC', '')} {zakaznik.get('ADRESA3', '')}".strip()
 
         y_base = pdf.get_y()
         if y_base > 220:
@@ -726,15 +653,15 @@ def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka:
         pdf.set_xy(105, y_base); pdf.cell(95, 6, s(f_umisteni), border=1, fill=True)
 
         pdf.set_font(p, "", 9)
-        pdf.set_xy(10, y_base + 6); pdf.cell(95, 5, s(f"  Firma: {firma[:45]}"))
+        pdf.set_xy(10, y_base + 6); pdf.cell(95, 5, s(f"  Firma: {zakaznik.get('FIRMA', '')[:45]}"))
         pdf.set_xy(105, y_base + 6); pdf.cell(95, 5, s(f"  O1: {objekty_map.get(1, '')[:45]}"))
         pdf.set_xy(10, y_base + 11); pdf.cell(95, 5, s(f"  Ulice: {adr_line1[:45]}"))
         pdf.set_xy(105, y_base + 11); pdf.cell(95, 5, s(f"  O2: {objekty_map.get(2, '')[:45]}"))
         pdf.set_xy(10, y_base + 16); pdf.cell(95, 5, s(f"  Město: {adr_line2[:45]}"))
         pdf.set_xy(105, y_base + 16); pdf.cell(95, 5, s(f"  O3: {objekty_map.get(3, '')[:45]}"))
-        pdf.set_xy(10, y_base + 21); pdf.cell(95, 5, s(f"  IČO: {ico}"))
+        pdf.set_xy(10, y_base + 21); pdf.cell(95, 5, s(f"  IČO: {zakaznik.get('ICO', '')}"))
         pdf.set_xy(105, y_base + 21); pdf.cell(95, 5, s(f"  O4: {objekty_map.get(4, '')[:45]}"))
-        pdf.set_xy(10, y_base + 26); pdf.cell(95, 5, s(f"  DIČ: {dic}"))
+        pdf.set_xy(10, y_base + 26); pdf.cell(95, 5, s(f"  DIČ: {zakaznik.get('DIC', '')}"))
         pdf.set_xy(105, y_base + 26); pdf.cell(95, 5, s(f"  O5: {objekty_map.get(5, '')[:45]}"))
 
         y_sig = y_base + 35
@@ -756,10 +683,11 @@ def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka:
     except Exception as e: return None, str(e)
 
 
-# ==========================================
-# 4. STREAMLIT UI - APLIKACE
-# ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v44.0", layout="wide", page_icon="🛡️")
+# =====================================================================
+# 🌐 LAYER 7: STREAMLIT UI (Front-End)
+# =====================================================================
+init_db()
+st.set_page_config(page_title="W-SERVIS Enterprise v46.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -772,8 +700,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-df_customers = load_all_customers() if 'load_all_customers' in globals() else None
-if not df_customers is not None:
+df_customers = load_local_customers()
+if df_customers is None:
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         df_customers = pd.read_sql("SELECT * FROM obchpartner", conn)
@@ -865,7 +793,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             st.rerun()
 
     st.title("🛡️ Zpracování zakázky (ERP Modul)")
-    st.caption("Verze 44.0 Automated Evidence Engine | Tabulka Evidence automaticky počítá DL")
+    st.caption("Verze 46.0 Enterprise Logic Layer | Deterministické jádro a oddělení vrstev")
 
     st.markdown("### 🏢 Rozřazení objektů pro tisk (O1 - O5)")
     col_o1, col_o2, col_o3, col_o4, col_o5 = st.columns(5)
@@ -906,6 +834,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         with cols[0]: 
             if is_auto: st.markdown(f"🤖 **{item_name}** *(Auto)*")
             else: st.write(f"{item_name}")
+        
         with cols[1]: p = st.number_input(f"P_{row_id}", min_value=0.0, step=0.1, value=float(p_val), key=f"p_{row_id}", label_visibility="collapsed")
         
         idx = 2; q1 = q2 = q3 = q4 = q5 = 0.0
@@ -926,9 +855,12 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         st.session_state.data_zakazky[item_name] = {"q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5, "q": q_tot, "p": float(p), "cat": cat_key}
 
     with tabs[0]:
+        if "show_success" in st.session_state:
+            st.success(st.session_state.pop("show_success"))
+            
         st.markdown("<div class='evidence-box'>", unsafe_allow_html=True)
         st.markdown("### 📋 Technická Evidence HP (Doklad o kontrole)")
-        st.info("Zde zapište všechny kontrolované přístroje. Systém následně z této tabulky **automaticky** vytvoří položky do Dodacího listu.")
+        st.info("Zde zapište kontrolované přístroje. Systém na základě definovaných Business Pravidel (Validation Layer) **automaticky** vytvoří položky do Fakturace (DL).")
         
         if not st.session_state.vybrany_zakaznik:
             st.warning("Vyberte zákazníka v levém panelu.")
@@ -938,9 +870,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                 df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, duvod_nv, objekt, misto FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
                 if df_evid.empty:
                     df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "duvod_nv", "objekt", "misto"])
-                    df_evid.loc[0] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                    df_evid.loc[1] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                    df_evid.loc[2] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
+                    for i in range(5): df_evid.loc[i] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
                 st.session_state.evidence_df = df_evid
                 st.session_state.loaded_ico = aktualni_ico
                 conn.close()
@@ -966,35 +896,30 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             )
             
             if st.button("💾 Uložit evidenci a PŘEPOČÍTAT Fakturaci", type="primary", use_container_width=True):
-                clean_evid = edited_evid.dropna(subset=['stav']).copy()
-                clean_evid["ico"] = aktualni_ico
+                # Service Layer Call
+                calc_data, err_msg = service_calculate_billing(edited_evid)
                 
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
-                conn.commit()  
-                clean_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
-                conn.close()
-                st.session_state.evidence_df = edited_evid
+                if err_msg:
+                    st.error(err_msg)
+                else:
+                    save_hp_evidence_to_db(aktualni_ico, calc_data["df_clean"])
+                    st.session_state.evidence_df = edited_evid
 
-                st.session_state.auto_kalkulace = {
-                    "S": len(clean_evid[clean_evid['stav'].isin(['S', 'S-nový'])]),
-                    "NO": len(clean_evid[clean_evid['stav'].isin(['NO', 'NOPZ'])]),
-                    "NV": len(clean_evid[clean_evid['stav'] == 'NV']),
-                    "total": len(clean_evid[clean_evid['stav'] != 'CH']),
-                    "vyrazene_kody": set(clean_evid[clean_evid['stav'] == 'NV']['duvod_nv'].dropna().tolist())
-                }
-                
-                p_s = get_price("HP", "Kontrola HP (shodný)") or 29.40
-                p_no = get_price("HP", "Kontrola HP (neshodný - opravitelný)") or 19.70
-                p_nv = get_price("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění") or 23.50
-                p_pausal = get_price("Servisni_ukony", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)") or 5.80
-
-                st.session_state.data_zakazky["Kontrola HP (shodný)"] = {"q1": st.session_state.auto_kalkulace["S"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["S"], "p": p_s, "cat": "HP"}
-                st.session_state.data_zakazky["Kontrola HP (neshodný - opravitelný)"] = {"q1": st.session_state.auto_kalkulace["NO"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NO"], "p": p_no, "cat": "HP"}
-                st.session_state.data_zakazky["Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění"] = {"q1": st.session_state.auto_kalkulace["NV"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NV"], "p": p_nv, "cat": "HP"}
-                st.session_state.data_zakazky["Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)"] = {"q1": st.session_state.auto_kalkulace["total"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["total"], "p": p_pausal, "cat": "Servisni_ukony"}
-                
-                st.success(f"✅ Kalkulace hotova! Nalezeno {st.session_state.auto_kalkulace['total']} přístrojů. Přepněte se do záložky '2. Auto-Fakturace'.")
+                    st.session_state.auto_kalkulace = calc_data
+                    
+                    st.session_state["q1_h1"] = float(calc_data["S"])
+                    st.session_state["q1_h2"] = float(calc_data["NO"])
+                    st.session_state["q1_h3"] = float(calc_data["NV"])
+                    st.session_state["q1_s_hp1"] = float(calc_data["total"])
+                    
+                    for r in ["h1", "h2", "h3", "s_hp1"]:
+                        st.session_state[f"q2_{r}"] = 0.0
+                        st.session_state[f"q3_{r}"] = 0.0
+                        st.session_state[f"q4_{r}"] = 0.0
+                        st.session_state[f"q5_{r}"] = 0.0
+                    
+                    st.session_state["show_success"] = f"✅ Kalkulace hotova! Nalezeno {calc_data['total']} platných přístrojů (Shodné: {calc_data['S']}, Opravitelné: {calc_data['NO']}, Vyřazené: {calc_data['NV']}). Množství bylo bezpečně propsáno do Fakturace."
+                    st.rerun()
                 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1180,7 +1105,7 @@ elif menu_volba == "🗄️ Katalog a Sklad (Ceníky)":
         st.info("Nahrajte do složky 'data/ceniky/' vaše Excel soubory, exportní soubor 'expimp.csv' a také soubor 'obchpartner.xml'.")
         if st.button("🚀 Spustit kompletní synchronizaci", type="primary"):
             with st.spinner("Aktualizuji databázi (překládám kódování u zákazníků)..."):
-                log = import_all_ceniky()
+                log = service_import_all_ceniky()
                 st.success("Hotovo!")
                 st.code(log)
 
