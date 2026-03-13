@@ -1324,17 +1324,17 @@ elif menu_volba == "📊 Obchodní Velín (50:50)":
     st.markdown("### Návrh ke schválení pro spravedlivé rozdělení 50:50 (Tomáš a Ilja Urbánkovi)")
     st.markdown("---")
 
-    @st.cache_data
-    def nacteni_dat():
-        cesta = r"C:\Users\PC2\Desktop\HASIC-SERVIS_SYSTEM\Migrace_Centraly_Navrh.csv"
-        try:
-            # Data jsou pouze čtena, originál v PC W-SERVIS je absolutně chráněn
-            df = pd.read_csv(cesta, sep=';', encoding='utf-8-sig')
-            return df
-        except Exception as e:
-            return pd.DataFrame()
+    st.info("💡 **Přístup odkudkoliv:** Aplikace je nyní nezávislá na tom, u jakého PC sedíte. Stačí sem myší přetáhnout vygenerovaný CSV soubor.")
+    
+    uploaded_file = st.file_uploader("📂 Nahrajte soubor 'Migrace_Centraly_Navrh.csv' z vašeho PC:", type=['csv'])
 
-    df_velin = nacteni_dat()
+    df_velin = pd.DataFrame()
+    if uploaded_file is not None:
+        try:
+            # Načtení dat přímo z nahraného souboru v prohlížeči (bezpečné a nezávislé na cestě v PC)
+            df_velin = pd.read_csv(uploaded_file, sep=';', encoding='utf-8-sig')
+        except Exception as e:
+            st.error("Nepodařilo se načíst soubor. Zkontrolujte, že jde o správný formát.")
 
     if not df_velin.empty:
         st.success(f"✅ Úspěšně načteno {len(df_velin)} auditovaných záznamů. Původní data na S: zůstala nedotčena.")
@@ -1366,7 +1366,7 @@ elif menu_volba == "📊 Obchodní Velín (50:50)":
         st.table(pd.DataFrame(vyrovnani_data))
 
     else:
-        st.warning("⚠️ Čekám na data. Spusťte prosím nejprve Start_Analytik.bat na ploše pro vygenerování návrhu.")
+        st.warning("⚠️ Čekám na data. Nahrajte prosím CSV soubor výše pro vygenerování návrhu.")
 
 st.sidebar.divider()
 st.sidebar.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']}")
