@@ -1019,8 +1019,8 @@ if menu_volba == "📝 Tvorba Dodacího listu":
                     "tlak_rok": st.column_config.NumberColumn("Rok tlak.", format="%d", min_value=1900, max_value=2100, width="small"),
                     "tlak_mesic": st.column_config.NumberColumn("Měs.", min_value=1, max_value=12, width="small"),
                     "stav": st.column_config.SelectboxColumn("Stav", options=["S", "NO", "NOPZ", "CH", "S-nový", "NV"], width="small"),
-                    "objekt": st.column_config.SelectboxColumn("Objekt", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
-                    "misto": st.column_config.TextColumn("Umístění", width="medium"),
+                    "objekt": st.column_config.SelectboxColumn("Objekt (Budova)", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
+                    "misto": st.column_config.TextColumn("Přesné umístění", width="medium"),
                     "do_opravy": st.column_config.CheckboxColumn("Do opr.", default=False, width="small"),
                     "do_skladu": st.column_config.CheckboxColumn("Sklad", default=False, width="small"),
                 }
