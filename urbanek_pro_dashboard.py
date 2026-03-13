@@ -11,6 +11,9 @@ import streamlit as st
 import pandas as pd
 from fpdf import FPDF
 
+# NASTAVENÍ STRÁNKY MUSÍ BÝT PRVNÍ PŘÍKAZ STREAMLITU (Ochrana proti pádům)
+st.set_page_config(page_title="W-SERVIS Enterprise v46.2", layout="wide", page_icon="🛡️")
+
 # =====================================================================
 # 🗄️ LAYER 1: SCHEMA (Definice a konfigurace)
 # =====================================================================
@@ -206,7 +209,6 @@ def save_hp_evidence_to_db(ico: str, df_clean: pd.DataFrame):
 # ⚙️ LAYER 5: SERVICES (Doménová a importní logika)
 # =====================================================================
 def safe_read_data_io(base_path: str) -> Optional[pd.DataFrame]:
-    """Služba pro čtení dat z různých zdrojů."""
     excel_path = base_path + ".xlsx"
     xml_path = base_path + ".xml"
     csv_path = base_path + ".csv"
@@ -242,7 +244,6 @@ def safe_read_data_io(base_path: str) -> Optional[pd.DataFrame]:
     return None
 
 def load_local_customers() -> Optional[pd.DataFrame]:
-    """Služba pro načtení lokálních zákazníků."""
     base_path = os.path.join("data", "ceniky", "zakaznici")
     df = safe_read_data_io(base_path)
     if df is not None and not df.empty:
@@ -283,7 +284,6 @@ def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
     }
 
 def service_import_all_ceniky() -> str:
-    """Komplexní služba pro import ceníků s normalizací."""
     log_messages: List[str] = []
     connection = sqlite3.connect(DB_PATH)
     try:
@@ -314,7 +314,6 @@ def service_import_all_ceniky() -> str:
                 log_messages.append(f"✅ Načteno: {name} ({len(df)} položek)")
             except Exception as e: log_messages.append(f"❌ {name}: Chyba DB – {e}")
                 
-        # Import Skladu
         expimp_base = os.path.join(CSV_FOLDER, "expimp")
         df_exp = safe_read_data_io(expimp_base)
         if df_exp is not None:
@@ -346,13 +345,10 @@ def service_import_all_ceniky() -> str:
     return "\n".join(log_messages) if log_messages else "Žádné soubory k načtení."
 
 def service_calculate_billing(df_evid: pd.DataFrame) -> Tuple[Dict, str]:
-    """Hlavní byznys logika: Počítá fakturaci z předané tabulky evidence."""
-    # Očištění o prázdné řádky
     df_clean = df_evid.copy()
     df_clean['typ_hp'] = df_clean['typ_hp'].fillna("").astype(str).str.strip()
     df_clean = df_clean[df_clean['typ_hp'] != '']
 
-    # Logika validace stavů a důvodů
     errors = []
     for idx, row in df_clean.iterrows():
         ok, msg = validate_stav_and_duvod(row.get('stav',''), row.get('duvod_nv',''))
@@ -728,7 +724,15 @@ def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka:
 # 🌐 LAYER 7: STREAMLIT UI (Front-End)
 # =====================================================================
 init_db()
-st.set_page_config(page_title="W-SERVIS Enterprise v46.1", layout="wide", page_icon="🛡️")
+
+# Inicializace session state přesunutá hned pod init_db a set_page_config
+if "data_zakazky" not in st.session_state: st.session_state["data_zakazky"] = {}
+if "dynamic_items" not in st.session_state: st.session_state["dynamic_items"] = {}
+if "vybrany_zakaznik" not in st.session_state: st.session_state["vybrany_zakaznik"] = None
+if "loaded_ico" not in st.session_state: st.session_state["loaded_ico"] = None
+if "evidence_df" not in st.session_state: st.session_state["evidence_df"] = pd.DataFrame()
+if "auto_kalkulace" not in st.session_state: 
+    st.session_state["auto_kalkulace"] = {"S": 0, "NO": 0, "NV": 0, "total": 0, "vyrazene_kody": set()}
 
 st.markdown("""
 <style>
@@ -781,8 +785,10 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
 
             opts = filt.apply(format_cust, axis=1).tolist()
             default_idx = 0
-            if st.session_state.vybrany_zakaznik:
-                curr_ico = clean_ico(st.session_state.vybrany_zakaznik.get("ICO", ""))
+            
+            vybrany_zak = st.session_state.get("vybrany_zakaznik")
+            if vybrany_zak:
+                curr_ico = clean_ico(vybrany_zak.get("ICO", ""))
                 for idx_opt, opt in enumerate(opts):
                     if f"IČO: {curr_ico}" in opt:
                         default_idx = idx_opt; break
@@ -791,12 +797,12 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             idx = opts.index(sel)
             curr = filt.iloc[idx].to_dict()
 
-            if (st.session_state.vybrany_zakaznik is None or clean_ico(st.session_state.vybrany_zakaznik.get("ICO")) != clean_ico(curr.get("ICO"))):
+            if (vybrany_zak is None or clean_ico(vybrany_zak.get("ICO")) != clean_ico(curr.get("ICO"))):
                 ico_val = clean_ico(curr.get("ICO"))
                 with st.spinner("Načítám detaily..."):
                     local_data = build_form_data_from_customer(ico_val)
                     if local_data: curr.update(local_data)
-                st.session_state.vybrany_zakaznik = curr.copy()
+                st.session_state["vybrany_zakaznik"] = curr.copy()
                 
             aktualni_ico = clean_ico(curr.get("ICO"))
             ulozene_objekty = get_objects_from_db(aktualni_ico)
@@ -817,8 +823,8 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                         add_object_to_db(aktualni_ico, novy_objekt)
                         st.rerun()
 
-        celkem_cena = sum(v["q"] * v.get("p", 0) for v in st.session_state.data_zakazky.values())
-        celkem_cena += sum(v["q"] * v.get("p", 0) for v in st.session_state.dynamic_items.values())
+        celkem_cena = sum(v["q"] * v.get("p", 0) for v in st.session_state.get("data_zakazky", {}).values())
+        celkem_cena += sum(v["q"] * v.get("p", 0) for v in st.session_state.get("dynamic_items", {}).values())
         
         st.markdown(f"""
         <div class="cart-box">
@@ -828,13 +834,14 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         """, unsafe_allow_html=True)
         
         if st.button("🗑️ Vyprázdnit zakázku", use_container_width=True):
-            st.session_state.data_zakazky = {}; st.session_state.dynamic_items = {}
-            st.session_state.auto_kalkulace = {"S": 0, "NO": 0, "NV": 0, "total": 0, "vyrazene_kody": set()}
-            st.session_state.evidence_df = pd.DataFrame()
+            st.session_state["data_zakazky"] = {}
+            st.session_state["dynamic_items"] = {}
+            st.session_state["auto_kalkulace"] = {"S": 0, "NO": 0, "NV": 0, "total": 0, "vyrazene_kody": set()}
+            st.session_state["evidence_df"] = pd.DataFrame()
             st.rerun()
 
     st.title("🛡️ Zpracování zakázky (ERP Modul)")
-    st.caption("Verze 46.1 Enterprise Logic Layer | Deterministické jádro a oddělení vrstev")
+    st.caption("Verze 46.2 Session Shield | Chráněná paměť a deterministické jádro")
 
     st.markdown("### 🏢 Rozřazení objektů pro tisk (O1 - O5)")
     col_o1, col_o2, col_o3, col_o4, col_o5 = st.columns(5)
@@ -879,7 +886,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         with cols[1]: p = st.number_input(f"P_{row_id}", min_value=0.0, step=0.1, value=float(p_val), key=f"p_{row_id}", label_visibility="collapsed")
         
         idx = 2; q1 = q2 = q3 = q4 = q5 = 0.0
-        old_val = st.session_state.data_zakazky.get(item_name, {})
+        old_val = st.session_state.get("data_zakazky", {}).get(item_name, {})
         
         if show_o1:
             with cols[idx]: q1 = st.number_input(f"1_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q1", 0.0)), key=f"q1_{row_id}", label_visibility="collapsed"); idx+=1
@@ -893,7 +900,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             with cols[idx]: q5 = st.number_input(f"5_{row_id}", min_value=0.0, step=float(step_val), value=float(old_val.get("q5", 0.0)), key=f"q5_{row_id}", label_visibility="collapsed"); idx+=1
         
         q_tot = q1 + q2 + q3 + q4 + q5
-        st.session_state.data_zakazky[item_name] = {"q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5, "q": q_tot, "p": float(p), "cat": cat_key}
+        st.session_state["data_zakazky"][item_name] = {"q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5, "q": q_tot, "p": float(p), "cat": cat_key}
 
     with tabs[0]:
         if "show_success" in st.session_state:
@@ -903,21 +910,21 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         st.markdown("### 📋 Technická Evidence HP (Doklad o kontrole)")
         st.info("Zde zapište kontrolované přístroje. Systém na základě definovaných Business Pravidel (Validation Layer) **automaticky** vytvoří položky do Fakturace (DL).")
         
-        if not st.session_state.vybrany_zakaznik:
+        if not st.session_state.get("vybrany_zakaznik"):
             st.warning("Vyberte zákazníka v levém panelu.")
         else:
-            if st.session_state.loaded_ico != aktualni_ico or st.session_state.evidence_df.empty:
+            if st.session_state.get("loaded_ico") != aktualni_ico or st.session_state.get("evidence_df", pd.DataFrame()).empty:
                 conn = sqlite3.connect(DB_PATH)
                 df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, duvod_nv, objekt, misto FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
                 if df_evid.empty:
                     df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "duvod_nv", "objekt", "misto"])
                     for i in range(5): df_evid.loc[i] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                st.session_state.evidence_df = df_evid
-                st.session_state.loaded_ico = aktualni_ico
+                st.session_state["evidence_df"] = df_evid
+                st.session_state["loaded_ico"] = aktualni_ico
                 conn.close()
             
             edited_evid = st.data_editor(
-                st.session_state.evidence_df,
+                st.session_state.get("evidence_df", pd.DataFrame()),
                 num_rows="dynamic",
                 use_container_width=True,
                 key="evidence_editor_safe",
@@ -937,16 +944,15 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             )
             
             if st.button("💾 Uložit evidenci a PŘEPOČÍTAT Fakturaci", type="primary", use_container_width=True):
-                # Service Layer Call
                 calc_data, err_msg = service_calculate_billing(edited_evid)
                 
                 if err_msg:
                     st.error(err_msg)
                 else:
                     save_hp_evidence_to_db(aktualni_ico, calc_data["df_clean"])
-                    st.session_state.evidence_df = edited_evid
+                    st.session_state["evidence_df"] = edited_evid
 
-                    st.session_state.auto_kalkulace = calc_data
+                    st.session_state["auto_kalkulace"] = calc_data
                     
                     st.session_state["q1_h1"] = float(calc_data["S"])
                     st.session_state["q1_h2"] = float(calc_data["NO"])
@@ -1016,57 +1022,57 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                     st.write(""); 
                     if st.button("➕ Přidat"):
                         cat = items_dict_lookup[zvolena_polozka]["internal_cat"]
-                        st.session_state.dynamic_items[zvolena_polozka] = {"q1": mq1, "q2": mq2, "q3": mq3, "q4": mq4, "q5": mq5, "q": mq1+mq2+mq3+mq4+mq5, "p": cena_input, "cat": "Zboží" if cat not in CATEGORY_MAP.values() else cat}
+                        st.session_state["dynamic_items"][zvolena_polozka] = {"q1": mq1, "q2": mq2, "q3": mq3, "q4": mq4, "q5": mq5, "q": mq1+mq2+mq3+mq4+mq5, "p": cena_input, "cat": "Zboží" if cat not in CATEGORY_MAP.values() else cat}
                         st.rerun()
 
-        if st.session_state.dynamic_items:
+        if st.session_state.get("dynamic_items"):
             st.divider()
-            for k, v in list(st.session_state.dynamic_items.items()):
+            for k, v in list(st.session_state["dynamic_items"].items()):
                 ca, cb, cc, cd = st.columns([5, 2, 2, 1])
                 ca.write(f"• {k}"); cb.write(f"{v.get('q',0)} ks"); cc.write(f"{v.get('q',0) * v.get('p',0):,.2f} Kč")
-                if cd.button("❌", key=f"del_{k}"): del st.session_state.dynamic_items[k]; st.rerun()
+                if cd.button("❌", key=f"del_{k}"): del st.session_state["dynamic_items"][k]; st.rerun()
 
     with tabs[4]:
         st.markdown("### 🖨️ Tiskové Centrum")
         st.info("Zde si můžete vygenerovat a stáhnout všechny potřebné dokumenty pro tuto zakázku. Data se berou ze záložek Evidence a Fakturace.")
         
-        firma = st.session_state.vybrany_zakaznik.get("FIRMA", "Neznámý") if st.session_state.vybrany_zakaznik else "Neznámý"
-        if not st.session_state.vybrany_zakaznik: st.error("Nejprve vyberte zákazníka v levém panelu!")
+        firma = st.session_state.get("vybrany_zakaznik", {}).get("FIRMA", "Neznámý") if st.session_state.get("vybrany_zakaznik") else "Neznámý"
+        if not st.session_state.get("vybrany_zakaznik"): st.error("Nejprve vyberte zákazníka v levém panelu!")
         
-        active_items = {k:v for k,v in st.session_state.data_zakazky.items() if v.get("q", 0) > 0}
-        active_items.update({k:v for k,v in st.session_state.dynamic_items.items() if v.get("q", 0) > 0})
+        active_items = {k:v for k,v in st.session_state.get("data_zakazky", {}).items() if v.get("q", 0) > 0}
+        active_items.update({k:v for k,v in st.session_state.get("dynamic_items", {}).items() if v.get("q", 0) > 0})
 
-        kody_k_tisku = list(st.session_state.auto_kalkulace.get("vyrazene_kody", set()))
+        kody_k_tisku = list(st.session_state.get("auto_kalkulace", {}).get("vyrazene_kody", set()))
 
         c1, c2, c3 = st.columns(3)
         
         with c1:
             st.markdown("#### 1. Technická část")
             if st.button("📄 DOKLAD O KONTROLE HP", type="secondary", use_container_width=True):
-                if st.session_state.evidence_df.empty: st.error("Evidence je prázdná!")
+                if st.session_state.get("evidence_df", pd.DataFrame()).empty: st.error("Evidence je prázdná!")
                 else:
-                    pdf_bytes, err = create_doklad_kontroly_pdf(st.session_state.vybrany_zakaznik, st.session_state.evidence_df, dl_number, zakazka, technik)
+                    pdf_bytes, err = create_doklad_kontroly_pdf(st.session_state.get("vybrany_zakaznik", {}), st.session_state["evidence_df"], dl_number, zakazka, technik)
                     if err: st.error(err)
                     else: st.download_button("⬇️ Uložit Doklad o kontrole", data=pdf_bytes, file_name=f"DoK_{dl_number}_{firma}.pdf", mime="application/pdf")
                     
             if st.button("⚠️ PROTOKOL O VYŘAZENÍ", type="secondary", use_container_width=True):
-                if st.session_state.evidence_df.empty: st.error("Evidence je prázdná!")
+                if st.session_state.get("evidence_df", pd.DataFrame()).empty: st.error("Evidence je prázdná!")
                 else:
-                    pdf_bytes, err = create_protokol_vyrazeni_pdf(st.session_state.vybrany_zakaznik, st.session_state.evidence_df, dl_number, zakazka, technik)
+                    pdf_bytes, err = create_protokol_vyrazeni_pdf(st.session_state.get("vybrany_zakaznik", {}), st.session_state["evidence_df"], dl_number, zakazka, technik)
                     if err: st.error(err)
                     else: st.download_button("⬇️ Uložit Protokol", data=pdf_bytes, file_name=f"LP_{dl_number}_{firma}.pdf", mime="application/pdf")
 
         with c2:
             st.markdown("#### 2. Finanční část (Kontroly)")
             if st.button("📄 DL: Kontroly HP a Zboží", type="primary", use_container_width=True):
-                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Kontroly HP", ["HP", "NAHRADY", "ZBOZI"])
+                pdf_bytes, err = create_wservis_dl(st.session_state.get("vybrany_zakaznik", {}), active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Kontroly HP", ["HP", "NAHRADY", "ZBOZI"])
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Kontroly)", data=pdf_bytes, file_name=f"DL_Kontroly_{dl_number}_{firma}.pdf", mime="application/pdf")
 
         with c3:
             st.markdown("#### 3. Finanční část (Opravy)")
             if st.button("📄 DL: Samostatné Opravy HP", type="primary", use_container_width=True):
-                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Opravy HP", ["OPRAVY", "NAHRADY", "ZBOZI"])
+                pdf_bytes, err = create_wservis_dl(st.session_state.get("vybrany_zakaznik", {}), active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Opravy HP", ["OPRAVY", "NAHRADY", "ZBOZI"])
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Opravy)", data=pdf_bytes, file_name=f"DL_Opravy_{dl_number}_{firma}.pdf", mime="application/pdf")
 
