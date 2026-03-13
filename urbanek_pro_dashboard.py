@@ -114,7 +114,6 @@ def normalize_category_to_table(cat_key: str) -> str:
     return f"cenik_{normalized}"
 
 def safe_read_data(base_path: str) -> Optional[pd.DataFrame]:
-    # (Zkráceno pro přehlednost - obsahuje stávající logiku xlsx/xml/csv)
     excel_path = base_path + ".xlsx"
     xml_path = base_path + ".xml"
     csv_path = base_path + ".csv"
@@ -131,6 +130,56 @@ def clean_ico(ico_val: Any) -> str:
     s = str(ico_val).strip()
     if s.lower() in ['nan', 'none', 'null', '']: return ""
     return s.split('.')[0]
+
+def validate_ico(ico: Any) -> bool:
+    ico_str = clean_ico(ico)
+    if not ico_str.isdigit() or len(ico_str) != 8: return False
+    digits = [int(d) for d in ico_str]
+    weights = [8, 7, 6, 5, 4, 3, 2]
+    s = sum(d * w for d, w in zip(digits[:7], weights))
+    r = s % 11
+    c = 1 if r == 0 else (0 if r == 1 else 11 - r)
+    return digits[7] == c
+
+def load_local_customers() -> Optional[pd.DataFrame]:
+    base_path = os.path.join("data", "ceniky", "zakaznici")
+    df = safe_read_data(base_path)
+    if df is not None and not df.empty:
+        def clean_col(c): 
+            s = str(c).strip().lower()
+            return "".join(char for char in unicodedata.normalize("NFKD", s) if not unicodedata.combining(char))
+        df.columns = [clean_col(c) for c in df.columns]
+        if "ico" in df.columns: df["ico"] = df["ico"].apply(clean_ico)
+        return df
+    return None
+
+def find_customer_by_ico_local(ico: Any) -> Optional[Dict[str, Any]]:
+    ico_clean = clean_ico(ico)
+    if not validate_ico(ico_clean): return None
+    df = load_local_customers()
+    if df is None or "ico" not in df.columns: return None
+    row = df[df["ico"] == ico_clean]
+    if row.empty: return None
+    return row.iloc[0].to_dict()
+
+def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
+    cust = find_customer_by_ico_local(ico)
+    if not cust: return None
+    return {
+        "ICO": clean_ico(cust.get("ico", "")),
+        "DIC": cust.get("dic", ""),
+        "FIRMA": cust.get("firma", ""),
+        "ULICE": cust.get("ulice", ""),
+        "CP": cust.get("cp", ""),
+        "CO": cust.get("co", ""),
+        "ADRESA3": cust.get("mesto", ""),
+        "PSC": cust.get("psc", ""),
+        "KONTAKT": cust.get("kontakt", ""),
+        "TELEFON": cust.get("telefon", ""),
+        "EMAIL": cust.get("email", ""),
+        "UCET": cust.get("ucet", ""),
+        "POZNAMKA": cust.get("poznamka", "")
+    }
 
 def get_price(cat_key: str, item_name: str) -> float:
     if not os.path.exists(DB_PATH): return 0.0
@@ -243,6 +292,9 @@ class UrbaneKPDF_Letterhead(FPDF):
         self.line(10, self.get_y(), self.w - 10, self.get_y())
         self.set_line_width(0.2)
         self.ln(5)
+
+    def footer(self) -> None:
+        pass
 
 # --- 3A. DOKLAD O KONTROLE HP (Landscape) ---
 def create_doklad_kontroly_pdf(zakaznik: Dict, df_evid: pd.DataFrame, dl_number: str, zakazka: str, technik: str) -> tuple[Optional[bytes], Optional[str]]:
@@ -650,7 +702,6 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             aktualni_ico = clean_ico(curr.get("ICO"))
             ulozene_objekty = get_objects_from_db(aktualni_ico)
             
-            # Auto-vytvoření adresy jako objektu
             ul_kl, cp_kl, co_kl = str(curr.get("ULICE", "")).strip(), str(curr.get("CP", "")).strip(), str(curr.get("CO", "")).strip()
             ob_kl = str(curr.get("ADRESA3", "")).strip()
             adr_slozena = f"{ul_kl} {cp_kl}" + (f"/{co_kl}" if co_kl and co_kl != "0" else "") if ul_kl else ""
@@ -667,7 +718,6 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                         add_object_to_db(aktualni_ico, novy_objekt)
                         st.rerun()
 
-        # Rychlý košík
         celkem_cena = sum(v["q"] * v.get("p", 0) for v in st.session_state.data_zakazky.values())
         celkem_cena += sum(v["q"] * v.get("p", 0) for v in st.session_state.dynamic_items.values())
         
@@ -687,7 +737,6 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
     st.title("🛡️ Zpracování zakázky (ERP Modul)")
     st.caption("Verze 44.0 Automated Evidence Engine | Tabulka Evidence automaticky počítá DL")
 
-    # Mapování sloupců PDF (O1-O5)
     st.markdown("### 🏢 Rozřazení objektů pro tisk (O1 - O5)")
     col_o1, col_o2, col_o3, col_o4, col_o5 = st.columns(5)
     with col_o1: show_o1 = st.checkbox("O1", value=True); o1_name = st.selectbox("Objekt 1:", [""] + ulozene_objekty, key="o1_sel") if show_o1 else ""
@@ -699,85 +748,6 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
 
     tabs = st.tabs(["📝 1. Evidence HP (Hlavní pracoviště)", "💰 2. Auto-Fakturace a Náhrady", "🛠️ 3. Opravy a Voda", "🛒 4. Zboží a Materiál", "🖨️ 5. TISK DOKLADŮ"])
 
-    with tabs[0]:
-        st.markdown("<div class='evidence-box'>", unsafe_allow_html=True)
-        st.markdown("### 📋 Technická Evidence HP (Doklad o kontrole)")
-        st.info("Zde zapište všechny kontrolované přístroje. Systém následně z této tabulky **automaticky** vytvoří položky do Dodacího listu.")
-        
-        if not st.session_state.vybrany_zakaznik:
-            st.warning("Vyberte zákazníka v levém panelu.")
-        else:
-            if st.session_state.loaded_ico != aktualni_ico or st.session_state.evidence_df.empty:
-                conn = sqlite3.connect(DB_PATH)
-                df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, duvod_nv, objekt, misto FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
-                if df_evid.empty:
-                    df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "duvod_nv", "objekt", "misto"])
-                    # Předpřipravíme 3 prázdné řádky pro snadnější klikání
-                    df_evid.loc[0] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                    df_evid.loc[1] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                    df_evid.loc[2] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
-                st.session_state.evidence_df = df_evid
-                st.session_state.loaded_ico = aktualni_ico
-                conn.close()
-            
-            edited_evid = st.data_editor(
-                st.session_state.evidence_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                key="evidence_editor_safe",
-                column_config={
-                    "druh": st.column_config.SelectboxColumn("Druh", options=["přenosný", "pojízdný", "přívěsný", "AHS"], width="small"),
-                    "typ_hp": st.column_config.TextColumn("Typ HP", width="medium"),
-                    "vyr_cislo": st.column_config.TextColumn("Výr. číslo", width="small"),
-                    "rok_vyr": st.column_config.NumberColumn("Rok", format="%d", width="small"),
-                    "mesic_vyr": st.column_config.NumberColumn("Měs.", width="small"),
-                    "tlak_rok": st.column_config.NumberColumn("Tlak. Rok", format="%d", width="small"),
-                    "tlak_mesic": st.column_config.NumberColumn("Tlak. Měs", width="small"),
-                    "stav": st.column_config.SelectboxColumn("Stav", options=STAVY_HP, width="small", required=True),
-                    "duvod_nv": st.column_config.SelectboxColumn("Důvod NV", options=list(DUVODY_VYRAZENI.keys()), width="small"),
-                    "objekt": st.column_config.SelectboxColumn("Objekt (Budova)", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
-                    "misto": st.column_config.TextColumn("Přesné umístění", width="medium"),
-                }
-            )
-            
-            # AUTOMATICKÝ PŘEPOČET
-            if st.button("💾 Uložit evidenci a PŘEPOČÍTAT Fakturaci", type="primary", use_container_width=True):
-                clean_evid = edited_evid.dropna(subset=['stav']).copy()
-                clean_evid["ico"] = aktualni_ico
-                
-                # Uložení do DB
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
-                conn.commit()  
-                clean_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
-                conn.close()
-                st.session_state.evidence_df = edited_evid
-
-                # Umělá inteligence - výpočet DL
-                st.session_state.auto_kalkulace = {
-                    "S": len(clean_evid[clean_evid['stav'].isin(['S', 'S-nový'])]),
-                    "NO": len(clean_evid[clean_evid['stav'].isin(['NO', 'NOPZ'])]),
-                    "NV": len(clean_evid[clean_evid['stav'] == 'NV']),
-                    "total": len(clean_evid[clean_evid['stav'] != 'CH']),
-                    "vyrazene_kody": set(clean_evid[clean_evid['stav'] == 'NV']['duvod_nv'].dropna().tolist())
-                }
-                
-                # Zápis přímo do košíku DL
-                p_s = get_price("HP", "Kontrola HP (shodný)") or 29.40
-                p_no = get_price("HP", "Kontrola HP (neshodný - opravitelný)") or 19.70
-                p_nv = get_price("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění") or 23.50
-                p_pausal = get_price("Servisni_ukony", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)") or 5.80
-
-                st.session_state.data_zakazky["Kontrola HP (shodný)"] = {"q1": st.session_state.auto_kalkulace["S"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["S"], "p": p_s, "cat": "HP"}
-                st.session_state.data_zakazky["Kontrola HP (neshodný - opravitelný)"] = {"q1": st.session_state.auto_kalkulace["NO"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NO"], "p": p_no, "cat": "HP"}
-                st.session_state.data_zakazky["Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění"] = {"q1": st.session_state.auto_kalkulace["NV"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NV"], "p": p_nv, "cat": "HP"}
-                st.session_state.data_zakazky["Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)"] = {"q1": st.session_state.auto_kalkulace["total"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["total"], "p": p_pausal, "cat": "Servisni_ukony"}
-                
-                st.success(f"✅ Kalkulace hotova! Nalezeno {st.session_state.auto_kalkulace['total']} přístrojů. Přepněte se do záložky '2. Auto-Fakturace'.")
-                
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Univerzální vykreslovač řádků pro ostatní záložky
     def get_col_layout():
         layout = [3.5, 1.5]
         if show_o1: layout.append(1.0)
@@ -824,6 +794,79 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         
         q_tot = q1 + q2 + q3 + q4 + q5
         st.session_state.data_zakazky[item_name] = {"q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5, "q": q_tot, "p": float(p), "cat": cat_key}
+
+    with tabs[0]:
+        st.markdown("<div class='evidence-box'>", unsafe_allow_html=True)
+        st.markdown("### 📋 Technická Evidence HP (Doklad o kontrole)")
+        st.info("Zde zapište všechny kontrolované přístroje. Systém následně z této tabulky **automaticky** vytvoří položky do Dodacího listu.")
+        
+        if not st.session_state.vybrany_zakaznik:
+            st.warning("Vyberte zákazníka v levém panelu.")
+        else:
+            if st.session_state.loaded_ico != aktualni_ico or st.session_state.evidence_df.empty:
+                conn = sqlite3.connect(DB_PATH)
+                df_evid = pd.read_sql("SELECT druh, typ_hp, vyr_cislo, rok_vyr, mesic_vyr, tlak_rok, tlak_mesic, stav, duvod_nv, objekt, misto FROM evidence_hp WHERE ico = ?", conn, params=(aktualni_ico,))
+                if df_evid.empty:
+                    df_evid = pd.DataFrame(columns=["druh", "typ_hp", "vyr_cislo", "rok_vyr", "mesic_vyr", "tlak_rok", "tlak_mesic", "stav", "duvod_nv", "objekt", "misto"])
+                    df_evid.loc[0] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
+                    df_evid.loc[1] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
+                    df_evid.loc[2] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
+                st.session_state.evidence_df = df_evid
+                st.session_state.loaded_ico = aktualni_ico
+                conn.close()
+            
+            edited_evid = st.data_editor(
+                st.session_state.evidence_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="evidence_editor_safe",
+                column_config={
+                    "druh": st.column_config.SelectboxColumn("Druh", options=["přenosný", "pojízdný", "přívěsný", "AHS"], width="small"),
+                    "typ_hp": st.column_config.TextColumn("Typ HP", width="medium"),
+                    "vyr_cislo": st.column_config.TextColumn("Výr. číslo", width="small"),
+                    "rok_vyr": st.column_config.NumberColumn("Rok", format="%d", width="small"),
+                    "mesic_vyr": st.column_config.NumberColumn("Měs.", width="small"),
+                    "tlak_rok": st.column_config.NumberColumn("Tlak. Rok", format="%d", width="small"),
+                    "tlak_mesic": st.column_config.NumberColumn("Tlak. Měs", width="small"),
+                    "stav": st.column_config.SelectboxColumn("Stav", options=STAVY_HP, width="small", required=True),
+                    "duvod_nv": st.column_config.SelectboxColumn("Důvod NV", options=list(DUVODY_VYRAZENI.keys()), width="small"),
+                    "objekt": st.column_config.SelectboxColumn("Objekt (Budova)", options=ulozene_objekty if ulozene_objekty else [""], width="medium"),
+                    "misto": st.column_config.TextColumn("Přesné umístění", width="medium"),
+                }
+            )
+            
+            if st.button("💾 Uložit evidenci a PŘEPOČÍTAT Fakturaci", type="primary", use_container_width=True):
+                clean_evid = edited_evid.dropna(subset=['stav']).copy()
+                clean_evid["ico"] = aktualni_ico
+                
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
+                conn.commit()  
+                clean_evid.to_sql("evidence_hp", conn, if_exists="append", index=False)
+                conn.close()
+                st.session_state.evidence_df = edited_evid
+
+                st.session_state.auto_kalkulace = {
+                    "S": len(clean_evid[clean_evid['stav'].isin(['S', 'S-nový'])]),
+                    "NO": len(clean_evid[clean_evid['stav'].isin(['NO', 'NOPZ'])]),
+                    "NV": len(clean_evid[clean_evid['stav'] == 'NV']),
+                    "total": len(clean_evid[clean_evid['stav'] != 'CH']),
+                    "vyrazene_kody": set(clean_evid[clean_evid['stav'] == 'NV']['duvod_nv'].dropna().tolist())
+                }
+                
+                p_s = get_price("HP", "Kontrola HP (shodný)") or 29.40
+                p_no = get_price("HP", "Kontrola HP (neshodný - opravitelný)") or 19.70
+                p_nv = get_price("HP", "Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění") or 23.50
+                p_pausal = get_price("Servisni_ukony", "Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)") or 5.80
+
+                st.session_state.data_zakazky["Kontrola HP (shodný)"] = {"q1": st.session_state.auto_kalkulace["S"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["S"], "p": p_s, "cat": "HP"}
+                st.session_state.data_zakazky["Kontrola HP (neshodný - opravitelný)"] = {"q1": st.session_state.auto_kalkulace["NO"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NO"], "p": p_no, "cat": "HP"}
+                st.session_state.data_zakazky["Kontrola HP (neshodný - neopravitelný) + odborné zneprovoznění"] = {"q1": st.session_state.auto_kalkulace["NV"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["NV"], "p": p_nv, "cat": "HP"}
+                st.session_state.data_zakazky["Vyhodnocení kontroly + vystavení dokladu o kontrole (á 1ks HP)"] = {"q1": st.session_state.auto_kalkulace["total"], "q2":0, "q3":0, "q4":0, "q5":0, "q": st.session_state.auto_kalkulace["total"], "p": p_pausal, "cat": "Servisni_ukony"}
+                
+                st.success(f"✅ Kalkulace hotova! Nalezeno {st.session_state.auto_kalkulace['total']} přístrojů. Přepněte se do záložky '2. Auto-Fakturace'.")
+                
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with tabs[1]:
         st.markdown("### Automaticky načtené úkony HP z Evidence")
@@ -931,7 +974,86 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Opravy)", data=pdf_bytes, file_name=f"DL_Opravy_{dl_number}_{firma}.pdf", mime="application/pdf")
 
-# NOVÝ MODUL: Obchodní Velín
+elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
+    st.title("🗄️ Katalog, Sklad a Databáze")
+    
+    evid_tabs = st.tabs(["📦 Správa Zboží a Ceníku", "🏢 Databáze Zákazníků", "⚙️ Import z W-SERVIS"])
+
+    with evid_tabs[0]:
+        st.markdown("### Nová karta položky (Zboží / ND)")
+        st.info("Zde vytvoříte novou položku. Bude okamžitě dostupná v roletce u Dodacího listu.")
+        
+        with st.expander("➕ Otevřít formulář pro novou položku", expanded=False):
+            with st.form("nove_zbozi_form", clear_on_submit=True):
+                c1, c2, c3 = st.columns([3, 1.5, 1.5])
+                with c1: form_nazev = st.text_input("Název položky (např. Hasicí přístroj P6, Tabulka fotolumin)", max_chars=150)
+                with c2: form_cena = st.number_input("Cena bez DPH (Kč)", min_value=0.0, step=10.0, format="%.2f")
+                with c3: form_kat = st.selectbox("Kategorie / Druh", ["Zboží", "ND_HP", "ND_Voda", "TAB", "HILTI", "CIDLO", "PASKA", "Ostatni"])
+
+                if st.form_submit_button("💾 Uložit novou položku do DB"):
+                    if form_nazev.strip():
+                        conn = sqlite3.connect(DB_PATH)
+                        cur = conn.cursor()
+                        table_target = normalize_category_to_table(form_kat)
+                        cur.execute(f"CREATE TABLE IF NOT EXISTS {table_target} (nazev TEXT, cena REAL)")
+                        cur.execute(f"INSERT INTO {table_target} (nazev, cena) VALUES (?, ?)", (form_nazev.strip(), form_cena))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Položka '{form_nazev}' byla úspěšně přidána do ceníku!")
+                    else:
+                        st.error("Název položky nesmí být prázdný!")
+
+        st.markdown("### 📋 Aktivní ceník (Editovatelná tabulka)")
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                df_zbozi = pd.read_sql("SELECT nazev as 'Název položky', cena as 'Cena bez DPH (Kč)' FROM cenik_zbozi ORDER BY nazev", conn)
+                edited_zbozi = st.data_editor(
+                    df_zbozi, 
+                    use_container_width=True, 
+                    num_rows="dynamic", 
+                    key="editor_zbozi",
+                    column_config={
+                        "Název položky": st.column_config.TextColumn(required=True),
+                        "Cena bez DPH (Kč)": st.column_config.NumberColumn(min_value=0.0, format="%.2f Kč")
+                    }
+                )
+                
+                if st.button("💾 Uložit změny provedené v tabulce"):
+                    edited_zbozi.columns = ["nazev", "cena"]
+                    edited_zbozi = edited_zbozi.dropna(subset=["nazev"])
+                    edited_zbozi.to_sql("cenik_zbozi", conn, if_exists="replace", index=False)
+                    st.success("Změny v ceníku byly trvale uloženy!")
+            except Exception:
+                st.warning("Ceník Zboží je zatím prázdný.")
+            conn.close()
+
+    with evid_tabs[1]:
+        st.markdown("### Databáze uložených zákazníků")
+        if df_customers is not None and not df_customers.empty:
+            view_df = df_customers.copy()
+            if "clean_ico" in view_df.columns: view_df = view_df.drop(columns=["clean_ico"])
+            view_df = view_df.fillna("")
+            
+            dostupne_sloupce = view_df.columns.tolist()
+            zobrazit_sloupce = [col for col in ["ICO", "FIRMA", "ULICE", "ADRESA1", "ADRESA2", "ADRESA3", "PSC", "DIC"] if col in dostupne_sloupce]
+            
+            if not zobrazit_sloupce:
+                zobrazit_sloupce = dostupne_sloupce
+                
+            st.dataframe(view_df[zobrazit_sloupce], use_container_width=True, height=500)
+        else:
+            st.info("Zatím nejsou nahráni žádní zákazníci.")
+
+    with evid_tabs[2]:
+        st.markdown("### Hromadný import ceníků")
+        st.info("Nahrajte do složky 'data/ceniky/' vaše Excel soubory, exportní soubor 'expimp.csv' a také soubor 'obchpartner.xml'.")
+        if st.button("🚀 Spustit kompletní synchronizaci", type="primary"):
+            with st.spinner("Aktualizuji databázi (překládám kódování u zákazníků)..."):
+                log = import_all_ceniky()
+                st.success("Hotovo!")
+                st.code(log)
+
 elif menu_volba == "📊 Obchodní Velín (50:50)":
     st.title("🚒 HASIČ-SERVIS URBÁNEK - Obchodní velín")
     st.markdown("### Návrh ke schválení pro spravedlivé rozdělení 50:50 (Tomáš a Ilja Urbánkovi)")
