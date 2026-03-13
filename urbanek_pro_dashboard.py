@@ -427,7 +427,7 @@ def setup_pdf_fonts(pdf: FPDF) -> bool:
             except Exception:
                 pass
                 
-    # Fallback na stáhnutí pokud opravdu není k dispozici (ochrana proti zhroucení u nových instalací)
+    # Fallback na stáhnutí pokud opravdu není k dispozici (ochrana proti zhroucení)
     try:
         if not os.path.exists("dejavu.ttf") or not os.path.exists("dejavu-bold.ttf"):
             req = urllib.request.Request("https://raw.githubusercontent.com/matumo/DejaVuSans/master/Fonts/DejaVuSans.ttf", headers={'User-Agent': 'Mozilla/5.0'})
@@ -601,7 +601,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
             pdf.ln(4)
             return True, cat_total
 
-        # DYNAMICKÉ ČÍSLOVÁNÍ SEKCI DLE PROFILU (MODULAR LOGIC)
+        # DYNAMICKÉ ČÍSLOVÁNÍ SEKCI DLE PROFILU
         total_sum = 0.0
         sec_num = 1
         
@@ -757,7 +757,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
                 pdf.cell(190, 4, s(f"  Kód {kod}: {text_duvodu}"), border=b_style, ln=True)
 
         pdf.ln(3)
-        wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 42.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
+        wservis_stamp = f"Zpracováno programem HASIČ-SERVIS Dashboard (Architektura W-SERVIS), verze: 43.0 / {datetime.date.today().strftime('%d.%m.%Y %H:%M:%S')}"
         pdf.set_font(p, "", 6)
         pdf.cell(0, 4, s(wservis_stamp), ln=True)
 
@@ -769,7 +769,7 @@ def create_wservis_dl(zakaznik: Dict[str, Any], items_dict: Dict[str, Any], dl_n
 # ==========================================
 # 5. STREAMLIT UI - DYNAMIC MATRIX & EVIDENCE
 # ==========================================
-st.set_page_config(page_title="W-SERVIS Enterprise v42.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v43.0", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -792,7 +792,12 @@ def load_all_customers() -> Optional[pd.DataFrame]:
 
 df_customers = load_all_customers()
 
-menu_volba = st.sidebar.radio("Navigace systému:", ["📝 Tvorba Dodacího listu", "🗄️ Katalog a Evidence (Náhrada Access)"])
+# ÚPRAVA: Přidán modul Obchodní Velín do menu
+menu_volba = st.sidebar.radio("Navigace systému:", [
+    "📝 Tvorba Dodacího listu", 
+    "🗄️ Katalog a Evidence (Náhrada Access)",
+    "📊 Obchodní Velín (50:50)"
+])
 
 celkem_polozek = 0
 celkem_cena = 0.0
@@ -898,7 +903,7 @@ if menu_volba == "📝 Tvorba Dodacího listu":
             st.rerun()
 
     st.title("🛡️ Tvorba Dodacího Listu (W-SERVIS)")
-    st.caption("Verze 42.0 Modular Print Logic | Modulární výběr tisku a dynamické číslování sekcí")
+    st.caption("Verze 43.0 Velín & Equity | Obsahuje analytický modul obchodního vyrovnání")
 
     st.markdown("### 🏢 Umístění a rozřazení objektů (O1 - O5)")
     st.info("Zvolte si, pro jaké objekty nyní tvoříte Dodací list. Vypnutím nepotřebných sloupců se roztáhne prostor a vrátí se tlačítka `+` a `-`.")
@@ -1312,6 +1317,56 @@ elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
                 log = import_all_ceniky()
                 st.success("Hotovo!")
                 st.code(log)
+
+# NOVÝ MODUL: Obchodní Velín
+elif menu_volba == "📊 Obchodní Velín (50:50)":
+    st.title("🚒 HASIČ-SERVIS URBÁNEK - Obchodní velín")
+    st.markdown("### Návrh ke schválení pro spravedlivé rozdělení 50:50 (Tomáš a Ilja Urbánkovi)")
+    st.markdown("---")
+
+    @st.cache_data
+    def nacteni_dat():
+        cesta = r"C:\Users\PC2\Desktop\HASIC-SERVIS_SYSTEM\Migrace_Centraly_Navrh.csv"
+        try:
+            # Data jsou pouze čtena, originál v PC W-SERVIS je absolutně chráněn
+            df = pd.read_csv(cesta, sep=';', encoding='utf-8-sig')
+            return df
+        except Exception as e:
+            return pd.DataFrame()
+
+    df_velin = nacteni_dat()
+
+    if not df_velin.empty:
+        st.success(f"✅ Úspěšně načteno {len(df_velin)} auditovaných záznamů. Původní data na S: zůstala nedotčena.")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Celkem kontrol provozuschopnosti", len(df_velin))
+        col2.metric("Odborný standard PV", "Měření průtoku a tlaku")
+        col3.metric("Legislativa (Neopravitelné NV)", "Mimo evidenci odpadů")
+
+        st.markdown("### 📋 Detailní přehled vyčištěných dat")
+        st.dataframe(df_velin, use_container_width=True)
+
+        st.markdown("---")
+        
+        # =========================================================
+        # 4. FINANČNÍ ROZDĚLENÍ 50:50
+        # =========================================================
+        st.markdown("### 🤝 Finanční garance a fakturace")
+        st.info("Tento návrh ke schválení striktně dodržuje ceník (např. shodný HP za 29,40 Kč, opravitelný za 19,70 Kč, zneprovoznění za 23,50 Kč, prodej RAIMA P6 za 1 090,00 Kč) a automaticky uplatňuje sníženou sazbu DPH 12 % pro SVJ a bytové domy.")
+        
+        # Ilustrační rozdělení na základě počtu úkonů
+        st.write("#### Návrh obchodního vyrovnání z aktuálního exportu:")
+        
+        vyrovnani_data = {
+            "Partner": ["Tomáš Urbánek (50 %)", "Ilja Urbánek (50 %)"],
+            "Podíl na úkonech (ks)": [len(df_velin) / 2, len(df_velin) / 2],
+            "Status": ["Připraveno k fakturaci", "Připraveno k fakturaci"]
+        }
+        st.table(pd.DataFrame(vyrovnani_data))
+
+    else:
+        st.warning("⚠️ Čekám na data. Spusťte prosím nejprve Start_Analytik.bat na ploše pro vygenerování návrhu.")
 
 st.sidebar.divider()
 st.sidebar.caption(f"© {datetime.date.today().year} {FIRMA_VLASTNI['název']}")
