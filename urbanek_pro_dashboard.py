@@ -12,7 +12,7 @@ import pandas as pd
 from fpdf import FPDF
 
 # =====================================================================
-# 🚀 LAYER 1: GLOBÁLNÍ IDENTITY (Prevence NameError hned od startu)
+# 🚀 LAYER 1: GLOBÁLNÍ KONFIGURACE (Prevence NameError)
 # =====================================================================
 FIRMA_VLASTNI = {
     "název": "Ilja Urbánek HASIČ - SERVIS",
@@ -34,21 +34,20 @@ DUVODY_VYRAZENI = {
     "I": "Nesplňuje tlak. zkoušky", "J": "Ukončení výroby ND", "K": "Neekonomické (na žádost)"
 }
 
-# Mapování kategorií na klíčová slova pro rozpoznávání souborů v podsložkách
 FILE_IDENTIFIERS = {
-    "HP": ["hp", "kontrola", "cenikhp"],
-    "Nahrady": ["nahrady", "cestov", "vylohy"],
-    "Voda": ["voda", "pv", "hydrant"],
-    "ND_HP": ["nd_hp", "dily", "soucastky"],
-    "Opravy": ["opravy", "dilna"],
-    "Zboží": ["zbozi", "prodej", "cen_zbozi"]
+    "HP": ["hp", "kontrol", "cenikhp"],
+    "Nahrady": ["nahrady", "cestov", "km", "nahr"],
+    "Voda": ["voda", "pv", "hydrant", "vodovod"],
+    "ND_HP": ["nd_hp", "dily", "ndhp"],
+    "Opravy": ["opravy", "servis", "opr_hp"],
+    "Zboží": ["zbozi", "prodej", "sklad"]
 }
 
 DB_PATH = "data/data.db"
 BASE_DATA_DIR = "data/"
 
 # =====================================================================
-# 🧹 LAYER 2: NORMALIZAČNÍ ROBOT (Czech Language Shield)
+# 🧹 LAYER 2: NORMALIZAČNÍ LOGIKA (Safe Strings & Numbers)
 # =====================================================================
 def normalize_column_name(col: str) -> str:
     col = str(col)
@@ -76,6 +75,9 @@ def format_cena(num):
     if num == 0: return "0,00"
     return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
 
+def safe_str(txt):
+    return str(txt).replace('\n', ' ').replace('\r', '').strip()
+
 # =====================================================================
 # 🗄️ LAYER 3: REPOSITORY (Databázová pevnost)
 # =====================================================================
@@ -90,6 +92,7 @@ def init_db():
     conn.close()
 
 def safe_db_query(query: str, params: tuple = ()) -> pd.DataFrame:
+    """Robotická pojistka: Místo pádu při chybějící tabulce vrátí prázdný DataFrame."""
     try:
         conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql(query, conn, params=params)
@@ -119,26 +122,28 @@ def run_expert_audit(df: pd.DataFrame, context_zakaznik: Dict = None) -> Tuple[p
     
     def check_row(row):
         issues = []
-        # Kontrola hydrantů a měření
+        # Audit hydrantů - TÜV NORD Standard (měření speciálním zařízením)
         typ = str(row.get('typ_hp', '')).upper()
         if any(x in typ for x in ["HYDRANT", "PV", "VODA"]):
             tlak = row.get('tlak_rok', 0)
-            if not tlak or tlak == 0 or str(tlak) == "None": issues.append("Chybí měření (TÜV standard)")
-        # Kontrola NV legislativy
-        if row.get('stav') == 'NV' and not row.get('duvod_nv'):
-            issues.append("Chybí kód vyřazení A-K")
+            if not tlak or tlak == 0 or str(tlak) == "None":
+                issues.append("Chybí měření průtoku a tlaku spec. zařízením")
+        
+        # Audit vyřazení - Legislativa
+        if row.get('stav') == 'NV':
+            if not row.get('duvod_nv'):
+                issues.append("Chybí kód A-K (povinné pro vyřazení)")
         return "✅ OK" if not issues else "❌ " + ", ".join(issues)
     
-    df_audit['robot_status'] = df_audit.apply(check_row, axis=1)
-    errs = len(df_audit[df_audit['robot_status'].str.contains("❌")])
+    df_audit['audit_robot'] = df_audit.apply(check_row, axis=1)
+    errs = len(df_audit[df_audit['audit_robot'].str.contains("❌")])
     total = len(df_audit)
-    return df_audit, {"chyb": errs, "celkem": total, "score": ((total-errs)/total*100)}
+    return df_audit, {"chyb": errs, "celkem": total, "score": ((total-errs)/total*100) if total > 0 else 100.0}
 
 # =====================================================================
-# ⚙️ LAYER 5: SERVICES (HLOUBKOVÝ REKURZIVNÍ IMPORTÉR)
+# ⚙️ LAYER 5: SERVICES (Hloubkový importér)
 # =====================================================================
 def find_all_files_recursive(root_dir: str) -> List[str]:
-    """Prohledá úplně všechny podsložky v daném adresáři."""
     file_list = []
     if not os.path.exists(root_dir): return []
     for root, dirs, files in os.walk(root_dir):
@@ -158,41 +163,38 @@ def safe_load_file(path: str) -> Optional[pd.DataFrame]:
     return None
 
 def service_import_data():
-    """Rekurzivní Importér: Sám proleze složky a najde co kam patří."""
+    """Rekurzivní Importér: Sám proleze složky z Gitu a najde, co kam patří."""
     init_db()
     conn = sqlite3.connect(DB_PATH)
     logs = []
     all_files = find_all_files_recursive(BASE_DATA_DIR)
     
     if not all_files:
-        return "⚠️ Robot nenašel v adresáři 'data/' žádné soubory k importu. Zkontrolujte Git synchronizaci."
+        return "⚠️ Robot nenašel v adresáři 'data/' žádné soubory k importu."
 
     for file_path in all_files:
         fname = os.path.basename(file_path).lower()
         df = safe_load_file(file_path)
         if df is None or df.empty: continue
-        
         df.columns = [normalize_column_name(c) for c in df.columns]
 
-        # 1. ROZPOZNÁNÍ PARTNERŮ (Zákazníci)
+        # 1. Partneri (Zákazníci) - Inteligentní hledání sloupce firma
         if any(x in fname for x in ["zakaznik", "partner", "firmy", "obchpartner"]):
-            # Robotické hledání sloupců pro firmu a ico
-            f_col = next((c for c in df.columns if any(x in c for x in ['firma', 'nazev', 'partner', 'odberatel'])), df.columns[0])
+            f_col = next((c for c in df.columns if any(x in c for x in ['firma', 'nazev', 'partner', 'odberatel', 'spolecnost'])), df.columns[0])
             i_col = next((c for c in df.columns if any(x in c for x in ['ico', 'ic', 'identif'])), df.columns[1] if len(df.columns)>1 else f_col)
             
             df_cl = pd.DataFrame()
             df_cl['firma'] = df[f_col].astype(str).str.strip()
             df_cl['ico'] = df[i_col].apply(clean_ico)
             
-            # Mapování ostatních polí
             for target in ['dic', 'ulice', 'mesto', 'psc']:
                 match = next((c for c in df.columns if target in c), None)
                 if match: df_cl[target] = df[match]
-
+            
             df_cl.to_sql("obchpartner", conn, if_exists="replace", index=False)
-            logs.append(f"🏢 Partneři načteni z: {fname} (Složka: {os.path.dirname(file_path)})")
+            logs.append(f"🏢 Partneři načteni z: {fname}")
 
-        # 2. ROZPOZNÁNÍ SKLADU (expimp)
+        # 2. Sklad (expimp)
         elif any(x in fname for x in ["expimp", "sklad", "zbozi"]):
             n_col = next((c for c in df.columns if any(x in c for x in ['nazev', 'zkratka', 'polozka'])), None)
             p_col = next((c for c in df.columns if any(x in c for x in ['cena1', 'prodejni', 'zaklad'])), None)
@@ -204,7 +206,7 @@ def service_import_data():
                 df_cl.to_sql("cenik_zbozi", conn, if_exists="replace", index=False)
                 logs.append(f"📦 Sklad synchronizován z: {fname}")
 
-        # 3. ROZPOZNÁNÍ CENÍKŮ (HP, Voda, atd.)
+        # 3. Ceníky HP / Voda / Náhrady
         else:
             for cat, keywords in FILE_IDENTIFIERS.items():
                 if any(kw in fname for kw in keywords):
@@ -214,7 +216,6 @@ def service_import_data():
                         df_cl = pd.DataFrame()
                         df_cl['nazev'] = df[n_col].astype(str).str.strip()
                         df_cl['cena'] = df[p_col].apply(normalize_price)
-                        df_cl = df_cl.dropna(subset=['nazev']).drop_duplicates('nazev')
                         df_cl.to_sql(normalize_category_to_table(cat), conn, if_exists="replace", index=False)
                         logs.append(f"✅ Ceník {cat} načten z: {fname}")
     
@@ -222,17 +223,19 @@ def service_import_data():
     return "\n".join(logs)
 
 # =====================================================================
-# 🌐 LAYER 6: UI BOOTSTRAP & PERSISTENCE
+# 🌐 LAYER 6: INITIALIZATION & SESSIONS (Safe Haven)
 # =====================================================================
 init_db()
 
-# Session State Persistence (The "Safe" House)
-if "data_zakazky" not in st.session_state: st.session_state["data_zakazky"] = {}
-if "dynamic_items" not in st.session_state: st.session_state["dynamic_items"] = {}
-if "vybrany_zakaznik" not in st.session_state: st.session_state["vybrany_zakaznik"] = None
-if "evidence_df" not in st.session_state: st.session_state["evidence_df"] = pd.DataFrame()
-if "velin_data" not in st.session_state: st.session_state["velin_data"] = pd.DataFrame()
-if "sync_report" not in st.session_state: st.session_state["sync_report"] = ""
+def ensure_session():
+    defaults = {
+        "data_zakazky": {}, "dynamic_items": {}, "vybrany_zakaznik": None, 
+        "evidence_df": pd.DataFrame(), "velin_data": pd.DataFrame(), "sync_report": ""
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state: st.session_state[k] = v
+
+ensure_session()
 
 st.set_page_config(page_title="W-SERVIS Enterprise v57.0", layout="wide", page_icon="🛡️") if 'st' in globals() else None
 
@@ -245,16 +248,16 @@ with st.sidebar:
     st.divider()
     
     # 🏢 VÝBĚR ZÁKAZNÍKA (Ochrana proti KeyError: firma)
-    st.subheader("🏢 Výběr zákazníka")
+    st.subheader("🏢 Výběr partnera")
     df_p = safe_db_query("SELECT firma, ico FROM obchpartner ORDER BY firma")
     
     if df_p.empty:
         st.warning("⚠️ Databáze je prázdná!")
-        if st.button("🚀 SPUSTIT HLOUBKOVOU SYNCHRONIZACI", type="primary", use_container_width=True):
+        if st.button("🚀 SPUSTIT KOMPLETNÍ REKURZIVNÍ SYNCHRONIZACI", type="primary", use_container_width=True):
             st.session_state["sync_report"] = service_import_data()
             st.rerun()
     else:
-        # Pevné vytváření možností pro selectbox (Failsafe)
+        # Pevné možnosti pro selectbox (Failsafe)
         options = ["-- Vyberte firmu --"]
         for _, r in df_p.iterrows():
             name = str(r.get('firma', 'Neznámý'))
@@ -283,25 +286,26 @@ with st.sidebar:
     menu = st.radio("Sekce centrály:", ["📝 Evidence & Kontroly", "🗄️ Katalog & Sklad", "📊 Obchodní Velín"])
     st.divider()
     
-    # Fakturační součet
+    # Fakturační košík
     tp = sum(v.get("q",0)*v.get("p",0) for v in st.session_state["data_zakazky"].values()) + sum(v.get("q",0)*v.get("p",0) for v in st.session_state["dynamic_items"].values())
     st.markdown(f"<div style='background:#f8f9fa;padding:15px;border-radius:8px;border-left:5px solid #ff4b4b'><b>🛒 Fakturace celkem:</b><br/>{format_cena(tp)} Kč</div>", unsafe_allow_html=True)
     if st.button("🗑️ Reset zakázky", use_container_width=True):
         st.session_state["data_zakazky"] = {}; st.session_state["dynamic_items"] = {}; st.session_state["evidence_df"] = pd.DataFrame(); st.rerun()
 
 # =====================================================================
-# 📝 PAGE: EVIDENCE & ZAKÁZKA
+# 📝 PAGE: EVIDENCE & KONTROLY
 # =====================================================================
 if menu == "📝 Evidence & Kontroly":
     st.title("🛡️ Zpracování zakázky")
-    tabs = st.tabs(["📋 1. Evidence", "💰 2. Fakturace", "🖨️ 3. Tisk"])
+    
+    tabs = st.tabs(["📋 1. Evidence kontrol", "💰 2. Fakturace", "🖨️ 3. Tisk"])
     
     with tabs[0]:
         if not st.session_state["vybrany_zakaznik"]:
             st.info("👈 Nejprve vyberte zákazníka v levém panelu.")
         else:
             vz = st.session_state["vybrany_zakaznik"]
-            st.subheader(f"Evidence pro: {vz.get('firma')}")
+            st.subheader(f"Evidence kontrol provozuschopnosti: {vz.get('firma')}")
             
             if st.session_state["evidence_df"].empty:
                 df_e = safe_db_query("SELECT * FROM evidence_hp WHERE ico = ?", (vz.get('ico'),))
@@ -311,10 +315,14 @@ if menu == "📝 Evidence & Kontroly":
                 st.session_state["evidence_df"] = df_e
 
             df_aud, v_stats = run_expert_audit(st.session_state["evidence_df"], vz)
-            if v_stats['chyb'] > 0: st.error(f"⚠️ Robot: Nalezeno {v_stats['chyb']} chyb v metodice (tlak u hydrantů/kódy NV).")
+            if v_stats['chyb'] > 0: st.error(f"⚠️ Robot: Nalezeno {v_stats['chyb']} nesouladů s metodikou TÜV NORD.")
             
-            edited = st.data_editor(df_aud, num_rows="dynamic", use_container_width=1, key="main_editor")
-            if st.button("💾 Uložit a přepočítat do faktury", type="primary"):
+            edited = st.data_editor(df_aud, num_rows="dynamic", use_container_width=1, key="main_editor",
+                                   column_config={"audit_robot": st.column_config.TextColumn("Robotická kontrola", disabled=True),
+                                                 "stav": st.column_config.SelectboxColumn("Stav", options=STAVY_HP),
+                                                 "duvod_nv": st.column_config.SelectboxColumn("Kód NV", options=list(DUVODY_VYRAZENI.keys()))})
+            
+            if st.button("💾 Uložit do databáze a přepočítat", type="primary"):
                 st.session_state["evidence_df"] = edited
                 # Robotické napočítání faktury
                 df_c = edited[edited['typ_hp'].fillna("") != ""]
@@ -323,32 +331,33 @@ if menu == "📝 Evidence & Kontroly":
                 st.success("✅ Uloženo."); st.rerun()
 
     with tabs[1]:
-        st.subheader("Položky Dodacího listu")
+        st.subheader("💰 Fakturační položky")
         def draw_billing(name, price, row_id):
             cols = st.columns([4, 2, 1, 1, 1, 1, 1])
             cols[0].write(name)
             p = cols[1].number_input("Cena", 0.0, value=float(price), key=f"p_{row_id}")
             q1 = cols[2].number_input("O1", 0.0, value=float(st.session_state.get(f"q1_{row_id}", 0.0)), key=f"q1_{row_id}")
             st.session_state["data_zakazky"][name] = {"q": q1, "p": p}
+        
         draw_billing("Kontrola HP (shodný)", 29.4, "h1")
         draw_billing("Kontrola HP (neshodný - opravitelný)", 19.7, "h2")
         draw_billing("Kontrola HP (neopravitelný) + zneprovoznění", 23.5, "h3")
         draw_billing("Vyhodnocení kontroly (á 1ks HP)", 5.8, "s1")
-
-    with tabs[2]:
-        if st.session_state["vybrany_zakaznik"]:
-            st.button("📄 Generovat PDF sadu")
-        else: st.error("Zákazník nevybrán.")
 
 # =====================================================================
 # 🗄️ PAGE: KATALOG & SKLAD
 # =====================================================================
 elif menu == "🗄️ Katalog & Sklad":
     st.title("🗄️ Správa databáze a skladu")
-    t1, t2 = st.tabs(["📦 Pohled do DB", "⚙️ Synchronizace (Recursive Scan)"])
+    t1, t2 = st.tabs(["📦 Pohled do DB", "⚙️ Synchronizace"])
+    
     with t1:
-        tbl = st.selectbox("Zobrazit tabulku:", ["obchpartner", "cenik_hp", "cenik_zbozi"])
-        st.dataframe(safe_db_query(f"SELECT * FROM {tbl}"), use_container_width=1)
+        tbl = st.selectbox("Zobrazit tabulku:", ["obchpartner (Zákazníci)", "cenik_hp (Kontroly)", "cenik_zbozi (Sklad)"])
+        actual_table = tbl.split(" ")[0]
+        df_v = safe_db_query(f"SELECT * FROM {actual_table}")
+        if df_v.empty: st.warning("⚠️ Tabulka je prázdná. Proveďte Synchronizaci.")
+        st.dataframe(df_v, use_container_width=1)
+        
     with t2:
         st.info("💡 Synchronizace hloubkově prohledá celou Git strukturu v adresáři 'data' a spojí nalezené soubory.")
         if st.button("🚀 SPUSTIT KOMPLETNÍ REKURZIVNÍ SYNCHRONIZACI", type="primary"):
@@ -360,13 +369,14 @@ elif menu == "🗄️ Katalog & Sklad":
 # =====================================================================
 elif menu == "📊 Obchodní Velín":
     st.title("📊 Obchodní Velín")
-    up_f = st.file_uploader("Nahrajte soubor pro audit:", type=['csv'])
+    up_f = st.file_uploader("Nahrajte CSV pro audit:", type=['csv'])
     if up_f:
         try: st.session_state["velin_data"] = pd.read_csv(up_f, sep=';', encoding='utf-8-sig')
         except: st.error("Chyba čtení CSV.")
+    
     if not st.session_state["velin_data"].empty:
         df_v, v_stats = run_expert_audit(st.session_state["velin_data"])
-        st.metric("Index integrity dat", f"{v_stats.get('score',0):.1f} %")
+        st.metric("Index integrity dat zakázky", f"{v_stats.get('score',0):.1f} %")
         st.dataframe(df_v, use_container_width=1)
 
 # =====================================================================
