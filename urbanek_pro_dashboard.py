@@ -241,6 +241,47 @@ def safe_read_data_io(base_path: str) -> Optional[pd.DataFrame]:
             except Exception: continue
     return None
 
+def load_local_customers() -> Optional[pd.DataFrame]:
+    """Služba pro načtení lokálních zákazníků."""
+    base_path = os.path.join("data", "ceniky", "zakaznici")
+    df = safe_read_data_io(base_path)
+    if df is not None and not df.empty:
+        def clean_col(c): 
+            s = str(c).strip().lower()
+            return "".join(char for char in unicodedata.normalize("NFKD", s) if not unicodedata.combining(char))
+        df.columns = [clean_col(c) for c in df.columns]
+        if "ico" in df.columns: df["ico"] = df["ico"].apply(clean_ico)
+        return df
+    return None
+
+def find_customer_by_ico_local(ico: Any) -> Optional[Dict[str, Any]]:
+    ico_clean = clean_ico(ico)
+    if not validate_ico(ico_clean): return None
+    df = load_local_customers()
+    if df is None or "ico" not in df.columns: return None
+    row = df[df["ico"] == ico_clean]
+    if row.empty: return None
+    return row.iloc[0].to_dict()
+
+def build_form_data_from_customer(ico: Any) -> Optional[Dict[str, Any]]:
+    cust = find_customer_by_ico_local(ico)
+    if not cust: return None
+    return {
+        "ICO": clean_ico(cust.get("ico", "")),
+        "DIC": cust.get("dic", ""),
+        "FIRMA": cust.get("firma", ""),
+        "ULICE": cust.get("ulice", ""),
+        "CP": cust.get("cp", ""),
+        "CO": cust.get("co", ""),
+        "ADRESA3": cust.get("mesto", ""),
+        "PSC": cust.get("psc", ""),
+        "KONTAKT": cust.get("kontakt", ""),
+        "TELEFON": cust.get("telefon", ""),
+        "EMAIL": cust.get("email", ""),
+        "UCET": cust.get("ucet", ""),
+        "POZNAMKA": cust.get("poznamka", "")
+    }
+
 def service_import_all_ceniky() -> str:
     """Komplexní služba pro import ceníků s normalizací."""
     log_messages: List[str] = []
@@ -687,7 +728,7 @@ def create_wservis_dl(zakaznik: Dict, items_dict: Dict, dl_number: str, zakazka:
 # 🌐 LAYER 7: STREAMLIT UI (Front-End)
 # =====================================================================
 init_db()
-st.set_page_config(page_title="W-SERVIS Enterprise v46.0", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="W-SERVIS Enterprise v46.1", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -793,7 +834,7 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
             st.rerun()
 
     st.title("🛡️ Zpracování zakázky (ERP Modul)")
-    st.caption("Verze 46.0 Enterprise Logic Layer | Deterministické jádro a oddělení vrstev")
+    st.caption("Verze 46.1 Enterprise Logic Layer | Deterministické jádro a oddělení vrstev")
 
     st.markdown("### 🏢 Rozřazení objektů pro tisk (O1 - O5)")
     col_o1, col_o2, col_o3, col_o4, col_o5 = st.columns(5)
@@ -1018,14 +1059,14 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
         with c2:
             st.markdown("#### 2. Finanční část (Kontroly)")
             if st.button("📄 DL: Kontroly HP a Zboží", type="primary", use_container_width=True):
-                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, kody_k_tisku, "Kontroly HP", ["HP", "NAHRADY", "ZBOZI"])
+                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Kontroly HP", ["HP", "NAHRADY", "ZBOZI"])
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Kontroly)", data=pdf_bytes, file_name=f"DL_Kontroly_{dl_number}_{firma}.pdf", mime="application/pdf")
 
         with c3:
             st.markdown("#### 3. Finanční část (Opravy)")
             if st.button("📄 DL: Samostatné Opravy HP", type="primary", use_container_width=True):
-                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, [], "Opravy HP", ["OPRAVY", "NAHRADY", "ZBOZI"])
+                pdf_bytes, err = create_wservis_dl(st.session_state.vybrany_zakaznik, active_items, dl_number, zakazka, technik, mapa_objektu_pro_pdf, typ_dl, "Opravy HP", ["OPRAVY", "NAHRADY", "ZBOZI"])
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Opravy)", data=pdf_bytes, file_name=f"DL_Opravy_{dl_number}_{firma}.pdf", mime="application/pdf")
 
