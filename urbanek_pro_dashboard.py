@@ -974,7 +974,8 @@ if menu_volba == "📝 Zpracování zakázky (Evidence & DL)":
                 if err: st.error(err)
                 else: st.download_button("⬇️ Uložit DL (Opravy)", data=pdf_bytes, file_name=f"DL_Opravy_{dl_number}_{firma}.pdf", mime="application/pdf")
 
-elif menu_volba == "🗄️ Katalog a Evidence (Náhrada Access)":
+# OPRAVA: Sjednocen přesný název tlačítka s menu
+elif menu_volba == "🗄️ Katalog a Sklad (Ceníky)":
     st.title("🗄️ Katalog, Sklad a Databáze")
     
     evid_tabs = st.tabs(["📦 Správa Zboží a Ceníku", "🏢 Databáze Zákazníků", "⚙️ Import z W-SERVIS"])
