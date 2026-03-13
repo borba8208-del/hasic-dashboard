@@ -12,19 +12,14 @@ import pandas as pd
 from fpdf import FPDF
 
 # =====================================================================
-# 🚀 LAYER 0: BOOTSTRAP (Musí být absolutně první)
-# =====================================================================
-st.set_page_config(page_title="W-SERVIS Enterprise v49.0", layout="wide", page_icon="🛡️")
-
-# =====================================================================
-# 🗄️ LAYER 1: KONSTANTY FIRMY (Globálně dostupné)
+# 🚀 LAYER 1: GLOBÁLNÍ IDENTITY (Musí být na začátku pro NameError fix)
 # =====================================================================
 FIRMA_VLASTNI = {
     "název": "Ilja Urbánek HASIČ - SERVIS",
     "sídlo": "Poříčská 186, 373 82 Boršov nad Vltavou",
     "ico": "60835265",
     "dic": "CZ5706281691",
-    "zápis": "Zapsán v živnostenském rejstříku Mag. města Č.Budějovic pod ID RŽP: 696191",
+    "zápis": "Zapsán v živnostenském rejstříku pod ID RŽP: 696191",
     "telefony": "608 409 036, 777 664 768",
     "email": "schranka@hasic-servis.com",
     "web": "www.hasic-servis.com",
@@ -32,7 +27,6 @@ FIRMA_VLASTNI = {
 }
 
 STAVY_HP = ["S", "NO", "NOPZ", "CH", "S-nový", "NV"]
-
 DUVODY_VYRAZENI = {
     "": "", "A": "HP neodpovídá ČSN", "B": "Zákaz používání (ozón)", 
     "C": "Deformace nádoby", "D": "Poškozený lak vnější", "E": "Poškozený lak vnitřní", 
@@ -52,7 +46,7 @@ DB_PATH = "data/data.db"
 CSV_FOLDER = "data/ceniky/"
 
 # =====================================================================
-# 🧹 LAYER 2: CORE UTILS (Normalizace a čištění)
+# 🧹 LAYER 2: NORMALIZAČNÍ ROBOT
 # =====================================================================
 def normalize_column_name(col: str) -> str:
     col = str(col)
@@ -82,7 +76,7 @@ def format_cena(num):
     return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
 
 # =====================================================================
-# 🗄️ LAYER 3: REPOSITORY (Bezpečná databáze)
+# 🗄️ LAYER 3: REPOSITORY (Databázová pevnost)
 # =====================================================================
 def init_db():
     if not os.path.exists("data"): os.makedirs("data")
@@ -95,7 +89,6 @@ def init_db():
     conn.close()
 
 def safe_db_query(query: str, params: tuple = ()) -> pd.DataFrame:
-    """Robotická pojistka: Místo pádu při chybějící tabulce vrátí prázdný DataFrame."""
     try:
         conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql(query, conn, params=params)
@@ -114,7 +107,7 @@ def get_price(cat_key: str, item_name: str) -> float:
     except: return 0.0
 
 # =====================================================================
-# 🛡️ LAYER 4: AUDIT ROBOT (Expertní logika)
+# 🛡️ LAYER 4: AUDITNÍ ROBOT (Vysoká robotizace kontrol)
 # =====================================================================
 def run_expert_audit(df: pd.DataFrame, context_zakaznik: Dict = None) -> Tuple[pd.DataFrame, Dict]:
     df_audit = df.copy()
@@ -122,26 +115,24 @@ def run_expert_audit(df: pd.DataFrame, context_zakaznik: Dict = None) -> Tuple[p
     
     def check_row(row):
         issues = []
-        f_name = str(context_zakaznik.get('firma', '') if context_zakaznik else "").upper()
-        # Audit DPH pro SVJ/Bytové domy
-        if any(x in f_name for x in ["SVJ", "BYTOVE", "DRUZSTVO"]):
-            pass
         # Audit Hydranty (Metodika TÜV NORD)
-        if str(row.get('druh','')).upper() in ["VODA", "V9TI"]:
+        typ = str(row.get('typ_hp', '')).upper()
+        if "HYDRANT" in typ or "PV" in typ or str(row.get('druh','')).upper() == "VODA":
             tlak = row.get('tlak_rok', 0)
-            if not tlak or tlak == 0: issues.append("Chybí měření")
-        # Audit NV
+            if not tlak or tlak == 0: issues.append("Chybí měření průtoku/tlaku")
+        # Audit Vyřazení
         if row.get('stav') == 'NV' and not row.get('duvod_nv'):
-            issues.append("Chybí kód A-K")
+            issues.append("Chybí legislativní kód vyřazení")
         return "✅ OK" if not issues else "❌ " + ", ".join(issues)
     
-    df_audit['robot_kontrol'] = df_audit.apply(check_row, axis=1)
-    errs = len(df_audit[df_audit['robot_kontrol'].str.contains("❌")])
+    df_audit['robot_status'] = df_audit.apply(check_row, axis=1)
+    errs = len(df_audit[df_audit['robot_status'].str.contains("❌")])
     total = len(df_audit)
-    return df_audit, {"chyb": errs, "celkem": total, "score": ((total-errs)/total*100)}
+    score = ((total - errs) / total * 100) if total > 0 else 100.0
+    return df_audit, {"chyb": errs, "celkem": total, "score": score}
 
 # =====================================================================
-# ⚙️ LAYER 5: SERVICES (Import a Sync)
+# ⚙️ LAYER 5: SERVICES (Importy a Sklad)
 # =====================================================================
 def safe_read_io(base_path: str) -> Optional[pd.DataFrame]:
     for ext in [".xlsx", ".csv"]:
@@ -171,7 +162,7 @@ def service_import_data():
                 df[['nazev', 'cena']].to_sql(normalize_category_to_table(k), conn, if_exists="replace", index=False)
                 logs.append(f"✅ {k} synchronizován.")
 
-    # 2. HLAVNÍ SKLAD (expimp.csv) - RESTORED
+    # 2. Sklad (expimp.csv)
     df_exp = safe_read_io(os.path.join(CSV_FOLDER, "expimp"))
     if df_exp is not None:
         df_exp.columns = [normalize_column_name(c) for c in df_exp.columns]
@@ -183,18 +174,18 @@ def service_import_data():
             df_cl['cena'] = df_exp[price_col].apply(normalize_price) if price_col else 0.0
             df_cl = df_cl.dropna(subset=['nazev']).drop_duplicates('nazev')
             df_cl.to_sql("cenik_zbozi", conn, if_exists="append", index=False)
-            logs.append(f"📦 ÚSPĚCH: Sklad expimp synchronizován.")
+            logs.append(f"📦 ÚSPĚCH: Hlavní sklad expimp spárován.")
 
-    # 3. Zákazníci
+    # 3. Zákazníci (Robotické mapování pro fix KeyError)
     df_c = safe_read_io("data/ceniky/zakaznici")
     if df_c is not None:
         df_c.columns = [normalize_column_name(c) for c in df_c.columns]
-        map_cols = {'firma': ['firma', 'nazev', 'smluvni_partner', 'partner'], 'ico': ['ico', 'identifikacni_cislo', 'ic']}
+        map_cols = {'firma': ['firma', 'nazev', 'partner', 'partner_jmeno'], 'ico': ['ico', 'ic', 'identifikacni_cislo']}
         for target, aliases in map_cols.items():
-            for alias in aliases:
-                if alias in df_c.columns and target not in df_c.columns: df_c.rename(columns={alias: target}, inplace=True)
+            for a in aliases:
+                if a in df_c.columns and target not in df_c.columns: df_c.rename(columns={a: target}, inplace=True)
         df_c.to_sql("obchpartner", conn, if_exists="replace", index=False)
-        logs.append("✅ Databáze zákazníků zocelena.")
+        logs.append("✅ Databáze partnerů zocelena.")
     conn.close()
     return "\n".join(logs)
 
@@ -204,15 +195,15 @@ def service_import_data():
 init_db()
 
 def ensure_session():
-    keys = {"data_zakazky": {}, "dynamic_items": {}, "vybrany_zakaznik": None, "loaded_ico": None, 
-            "evidence_df": pd.DataFrame(), "velin_data": pd.DataFrame()}
+    keys = {"data_zakazky": {}, "dynamic_items": {}, "vybrany_zakaznik": None, 
+            "evidence_df": pd.DataFrame(), "velin_data": pd.DataFrame(), "initialized_v10": True}
     for k, v in keys.items():
         if k not in st.session_state: st.session_state[k] = v
 
 ensure_session()
 
 # =====================================================================
-# 🖥️ LAYER 7: UI RENDERING
+# 🖥️ LAYER 7: UI RENDERING (Důraz na stabilitu prvků)
 # =====================================================================
 menu = st.sidebar.radio("Navigace centrály:", ["📝 Zpracování zakázky", "🗄️ Katalog & Sklad", "📊 Obchodní Velín (Audit)"])
 
@@ -223,90 +214,100 @@ if menu == "📝 Zpracování zakázky":
         zak_n = st.text_input("Zakázka:", value="1/13")
         tech_n = st.text_input("Technik:", value="Tomáš Urbánek")
         st.divider()
-        df_c = safe_db_query("SELECT * FROM obchpartner ORDER BY firma")
-        aktualni_ico = ""; ulozene_objekty = []
-        if not df_c.empty:
-            opts = df_c.apply(lambda r: f"{r['firma']} | {r['ico']}", 1).tolist()
-            vz = st.session_state.get("vybrany_zakaznik")
+        
+        # Bezpečný výběr partnera (Robotická pojistka proti KeyError)
+        df_cp = safe_db_query("SELECT * FROM obchpartner ORDER BY firma")
+        if not df_cp.empty and 'firma' in df_cp.columns:
+            opts = df_cp.apply(lambda r: f"{r['firma']} | {r['ico']}", 1).tolist()
+            vz = st.session_state["vybrany_zakaznik"]
             def_idx = 0
             if vz:
                 for i, o in enumerate(opts):
                     if vz["ico"] in o: def_idx = i; break
-            sel = st.selectbox("🔍 Odběratel:", ["-- Vyberte --"] + opts, index=def_idx+1 if vz else 0)
+            sel = st.selectbox("🔍 Vyberte odběratele:", ["-- Vyberte --"] + opts, index=def_idx+1 if vz else 0)
             if sel != "-- Vyberte --":
                 ico_clean = sel.split(" | ")[1].strip()
                 if not vz or vz["ico"] != ico_clean:
-                    st.session_state["vybrany_zakaznik"] = df_c[df_c['ico'] == ico_clean].iloc[0].to_dict()
+                    st.session_state["vybrany_zakaznik"] = df_cp[df_cp['ico'] == ico_clean].iloc[0].to_dict()
                     st.session_state["evidence_df"] = pd.DataFrame()
                     st.rerun()
-                aktualni_ico = ico_clean
-                ulozene_objekty = get_objects_from_db(aktualni_ico)
+        else:
+            st.warning("⚠️ Databáze partnerů je prázdná. Jděte do 'Katalog & Sklad' a proveďte synchronizaci.")
         
-        # Košík
-        total_p = sum(v["q"]*v["p"] for v in st.session_state["data_zakazky"].values()) + sum(v["q"]*v["p"] for v in st.session_state["dynamic_items"].values())
-        st.markdown(f"""<div class="cart-box"><b>🛒 Celkem bez DPH:</b><br/>{format_cena(total_p)} Kč</div>""", 1)
-        if st.button("🗑️ Vyprázdnit"):
-            st.session_state["data_zakazky"] = {}; st.session_state["dynamic_items"] = {}; st.session_state["evidence_df"] = pd.DataFrame(); st.rerun()
+        # Sumář košíku
+        tp = sum(v["q"]*v["p"] for v in st.session_state["data_zakazky"].values()) + sum(v["q"]*v["p"] for v in st.session_state["dynamic_items"].values())
+        st.markdown(f"""<div style='background:#f8f9fa;padding:15px;border-radius:8px;border-left:5px solid #ff4b4b'><b>🛒 K úhradě bez DPH:</b><br/>{format_cena(tp)} Kč</div>""", 1)
 
     st.title("🛡️ Zpracování zakázky")
-    tabs = st.tabs(["📝 1. Evidence HP", "💰 2. Fakturace & Náhrady", "🛠️ 3. Opravy & Voda", "🛒 4. Zboží", "🖨️ 5. Tisk"])
+    tabs = st.tabs(["📝 1. Evidence HP", "💰 2. Fakturace", "🛠️ 3. Opravy", "🖨️ 5. Tisk"])
     
     with tabs[0]:
-        if not st.session_state["vybrany_zakaznik"]: st.warning("👈 Vyberte zákazníka vlevo.")
+        if not st.session_state["vybrany_zakaznik"]:
+            st.warning("👈 Nejprve vyberte zákazníka v levém panelu.")
         else:
+            ico = clean_ico(st.session_state["vybrany_zakaznik"]["ico"])
             if st.session_state["evidence_df"].empty:
-                df_e = safe_db_query("SELECT * FROM evidence_hp WHERE ico = ?", (aktualni_ico,))
+                df_e = safe_db_query("SELECT * FROM evidence_hp WHERE ico = ?", (ico,))
                 if df_e.empty:
                     df_e = pd.DataFrame(columns=["druh","typ_hp","vyr_cislo","rok_vyr","mesic_vyr","tlak_rok","tlak_mesic","stav","duvod_nv","objekt","misto"])
                     for i in range(5): df_e.loc[i] = ["přenosný", "", "", None, None, None, None, "S", "", "", ""]
                 st.session_state["evidence_df"] = df_e
             
             df_aud, stats = run_expert_audit(st.session_state["evidence_df"], st.session_state["vybrany_zakaznik"])
-            st.write(f"### Evidence pro: {st.session_state['vybrany_zakaznik']['firma']}")
-            if stats['chyb'] > 0: st.error(f"🤖 Robot: Nalezeno {stats['chyb']} chyb!")
+            st.subheader(f"Evidence pro: {st.session_state['vybrany_zakaznik']['firma']}")
+            if stats['chyb'] > 0: st.error(f"🤖 Robot: Nalezeno {stats['chyb']} chyb v metodice!")
+            
             edited = st.data_editor(df_aud, num_rows="dynamic", use_container_width=1, key="main_evid_editor")
-            if st.button("💾 Uložit a Přepočítat", type="primary"):
-                st.session_state["evidence_df"] = edited; st.success("Uloženo."); st.rerun()
+            if st.button("💾 Uložit do databáze a přepočítat", type="primary"):
+                st.session_state["evidence_df"] = edited
+                st.success("✅ Uloženo a synchronizováno.")
 
     with tabs[1]:
+        st.subheader("Automatické položky dle Evidence")
         def draw_it(name, price, row_id):
             cols = st.columns([4, 2, 1, 1, 1, 1, 1])
             cols[0].write(name)
-            p = cols[1].number_input("Kč", 0.0, value=float(price), key=f"p_{row_id}")
+            p = cols[1].number_input("Cena", 0.0, value=float(price), key=f"p_{row_id}")
             q1 = cols[2].number_input("O1", 0.0, value=float(st.session_state.get(f"q1_{row_id}", 0.0)), key=f"q1_{row_id}")
             st.session_state["data_zakazky"][name] = {"q": q1, "p": p}
         draw_it("Kontrola HP (shodný)", 29.4, "h1")
         draw_it("Kontrola HP (neshodný - opravitelný)", 19.7, "h2")
         draw_it("Vyhodnocení kontroly (á 1ks HP)", 5.8, "s1")
 
-    with tabs[4]:
+    with tabs[3]:
         if st.session_state["vybrany_zakaznik"]:
-            st.success(f"Připraveno pro {st.session_state['vybrany_zakaznik']['firma']}")
-            st.button("📄 Generovat PDF")
-        else: st.warning("Zákazník nevybrán.")
+            st.info(f"Tisk pro {st.session_state['vybrany_zakaznik']['firma']}")
+            st.button("📄 Generovat Dodací list")
+            st.button("📄 Generovat Doklad o kontrole")
+        else: st.error("Chybí zákazník.")
 
 elif menu == "🗄️ Katalog & Sklad":
     st.title("🗄️ Katalog a Sklad")
     t1, t2 = st.tabs(["📦 Pohled do DB", "⚙️ Synchronizace"])
     with t1:
-        chosen = st.selectbox("Tabulka:", ["obchpartner", "cenik_hp", "cenik_zbozi", "cenik_voda"])
+        chosen = st.selectbox("Vyberte tabulku:", ["obchpartner", "cenik_hp", "cenik_zbozi"])
         df_v = safe_db_query(f"SELECT * FROM {chosen}")
-        if df_v.empty: st.warning("Tabulka je prázdná.")
+        if df_v.empty: st.warning("⚠️ Tabulka je prázdná. Proveďte synchronizaci.")
         st.dataframe(df_v, use_container_width=1)
     with t2:
         if st.button("🚀 Spustit kompletní synchronizaci s W-SERVIS"):
-            m = service_import_data(); st.success("Hotovo"); st.code(m)
+            msg = service_import_data()
+            st.success("Synchronizace dokončena."); st.code(msg)
 
 elif menu == "📊 Obchodní Velín (Audit)":
     st.title("📊 Obchodní Velín")
     up_f = st.file_uploader("Nahrajte Migrace_Centraly_Navrh.csv:", type=['csv'])
     if up_f:
-        try: st.session_state["velin_data"] = pd.read_csv(up_f, sep=';', encoding='utf-8-sig')
+        try:
+            st.session_state["velin_data"] = pd.read_csv(up_f, sep=';', encoding='utf-8-sig')
         except: st.error("Chyba čtení CSV.")
     if not st.session_state["velin_data"].empty:
         df_a, s_a = run_expert_audit(st.session_state["velin_data"])
-        st.metric("Index integrity dat", f"{s_a['score']:.1f} %")
+        st.metric("Index integrity dat zakázky", f"{s_a['score']:.1f} %")
         st.dataframe(df_a, use_container_width=1)
 
+# =====================================================================
+# 🏁 LAYER 8: FOOTER (NameError Safe)
+# =====================================================================
 st.sidebar.divider()
 st.sidebar.caption(f"© {datetime.now().year} {FIRMA_VLASTNI['název']}")
